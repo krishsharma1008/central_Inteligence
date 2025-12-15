@@ -6,19 +6,20 @@ import time
 import logging
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
-from langchain_ollama import OllamaEmbeddings
+from SarvamClient import SarvamClient
 
 # Configure logging
 logger = logging.getLogger('outlook-email.embedding')
 
 class EmbeddingProcessor:
-    def __init__(self, db_path: str, collection_name: str):
+    def __init__(self, db_path: str, collection_name: str, sarvam_api_key: str):
         """
         Initialize the embedding processor.
         
         Args:
             db_path: Path to storage
             collection_name: Name of the collection to use
+            sarvam_api_key: Sarvam API key for embeddings and analysis
         """
         # Import here to avoid circular imports
         from MongoDBHandler import MongoDBHandler
@@ -29,13 +30,12 @@ class EmbeddingProcessor:
             collection_name
         )
         
-        # Initialize Ollama embeddings
+        # Initialize Sarvam client
         try:
-            self.embeddings = OllamaEmbeddings(
-                model=os.getenv("EMBEDDING_MODEL"),
-                base_url=os.getenv("EMBEDDING_BASE_URL")
-            )
+            self.sarvam_client = SarvamClient(api_key=sarvam_api_key)
+            logger.info("Sarvam client initialized successfully")
         except Exception as e:
+            logger.error(f"Error initializing Sarvam client: {str(e)}")
             raise
     
     def create_email_content(self, email: Dict[str, Any]) -> str:
@@ -127,14 +127,14 @@ Date: {email.get('ReceivedTime', '')}
         
         # Process documents in batches
         try:
-            # Add retry logic for embedding generation
+            # Generate embeddings using Sarvam client
             max_embed_retries = 3
             embeddings = None
             
             for embed_attempt in range(max_embed_retries):
                 try:
                     logger.info(f"Generating embeddings for {len(documents)} documents (attempt {embed_attempt + 1}/{max_embed_retries})")
-                    embeddings = self.embeddings.embed_documents(documents)
+                    embeddings = self.sarvam_client.generate_embeddings(documents)
                     logger.info(f"Successfully generated {len(embeddings)} embeddings")
                     break
                 except Exception as e:
@@ -147,14 +147,18 @@ Date: {email.get('ReceivedTime', '')}
             if not embeddings:
                 logger.error("No embeddings generated")
                 return 0, len(documents) + failed_count
-                
+            
+            # Analyze emails using Sarvam client
+            logger.info(f"Analyzing {len(documents)} emails")
+            analyses = self.sarvam_client.analyze_batch(documents)
+            
             # Create batch of documents to add to MongoDB
             batch = [{
                 'id': id_,
                 'embedding': emb,
                 'document': doc,
-                'metadata': meta
-            } for id_, emb, doc, meta in zip(ids, embeddings, documents, metadatas)]
+                'metadata': {**meta, 'analysis': analysis}
+            } for id_, emb, doc, meta, analysis in zip(ids, embeddings, documents, metadatas, analyses)]
             
             logger.info(f"Adding {len(batch)} documents to MongoDB")
             

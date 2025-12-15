@@ -18,9 +18,9 @@ from datetime import datetime
 from fastmcp import FastMCP, Context
 from MongoDBHandler import MongoDBHandler
 from SQLiteHandler import SQLiteHandler
-from OutlookConnector import OutlookConnector
+from IMAPConnector import IMAPConnector
 from EmailMetadata import EmailMetadata
-from langchain_ollama import OllamaEmbeddings
+from SarvamClient import SarvamClient
 from debug_utils import dump_email_debug
 
 # Initialize FastMCP server with dependencies
@@ -28,9 +28,8 @@ mcp = FastMCP(
     "outlook-email",
     dependencies=[
         "pymongo",
-        "langchain",
-        "langchain_ollama",
-        "pywin32"
+        "imapclient",
+        "requests"
     ]
 )
 
@@ -39,8 +38,9 @@ def validate_config(config: Dict[str, str]) -> None:
     required_vars = [
         "MONGODB_URI",
         "SQLITE_DB_PATH",
-        "EMBEDDING_BASE_URL",
-        "EMBEDDING_MODEL",
+        "SARVAM_API_KEY",
+        "EMAIL_ADDRESS",
+        "EMAIL_PASSWORD",
         "COLLECTION_NAME"
     ]
     missing_vars = [var for var in required_vars if not config.get(var)]
@@ -48,8 +48,10 @@ def validate_config(config: Dict[str, str]) -> None:
         raise ValueError(f"Missing required configuration: {', '.join(missing_vars)}")
     
     # Set default values for optional configuration
-    if "PROCESS_DELETED_ITEMS" not in config:
-        config["PROCESS_DELETED_ITEMS"] = "false"
+    if "IMAP_SERVER" not in config:
+        config["IMAP_SERVER"] = "outlook.office365.com"
+    if "IMAP_PORT" not in config:
+        config["IMAP_PORT"] = "993"
 
 class EmailProcessor:
     def __init__(self, config: Dict[str, str]):
@@ -60,26 +62,34 @@ class EmailProcessor:
             config: Dictionary containing configuration values:
                 - MONGODB_URI: MongoDB connection string
                 - SQLITE_DB_PATH: Path to SQLite database
-                - EMBEDDING_BASE_URL: Base URL for embeddings
-                - EMBEDDING_MODEL: Model to use for embeddings
+                - SARVAM_API_KEY: Sarvam API key for embeddings and analysis
+                - EMAIL_ADDRESS: Email address for IMAP access
+                - EMAIL_PASSWORD: App password for IMAP access
+                - IMAP_SERVER: IMAP server address
+                - IMAP_PORT: IMAP port
                 - COLLECTION_NAME: Name of the MongoDB collection to use
         """
         self.config = config
         self.collection_name = config["COLLECTION_NAME"]
         
-        # Initialize embedding processor
+        # Initialize embedding processor with Sarvam API key
         from tools.embedding_processor import EmbeddingProcessor
         self.embedding_processor = EmbeddingProcessor(
             db_path=config["MONGODB_URI"],
-            collection_name=self.collection_name
+            collection_name=self.collection_name,
+            sarvam_api_key=config["SARVAM_API_KEY"]
         )
         
         # Initialize SQLite handler
         self.sqlite = SQLiteHandler(config["SQLITE_DB_PATH"])
         
-        # Initialize Outlook connector with deleted items setting
-        process_deleted = config.get("PROCESS_DELETED_ITEMS", "false").lower() == "true"
-        self.outlook = OutlookConnector(process_deleted_items=process_deleted)
+        # Initialize IMAP connector
+        self.imap = IMAPConnector(
+            email_address=config["EMAIL_ADDRESS"],
+            password=config["EMAIL_PASSWORD"],
+            imap_server=config.get("IMAP_SERVER", "outlook.office365.com"),
+            imap_port=int(config.get("IMAP_PORT", "993"))
+        )
 
     async def process_emails(
         self,
@@ -98,48 +108,35 @@ class EmailProcessor:
             if (end - start).days > 30:
                 raise ValueError("Date range cannot exceed 30 days")
 
-            # Get mailboxes
+            # Connect to IMAP and retrieve emails from inbox
             await ctx.report_progress(0, "Initializing email processing")
             
-            if "All" in mailboxes:
-                outlook_mailboxes = self.outlook.get_mailboxes()
-            else:
-                outlook_mailboxes = []
-                for mailbox_name in mailboxes:
-                    mailbox = self.outlook.get_mailbox(mailbox_name)
-                    if mailbox is not None:
-                        outlook_mailboxes.append(mailbox)
-
-            if not outlook_mailboxes:
-                return {
-                    "success": False,
-                    "error": "No valid mailboxes found"
-                }
-
-            # Include Deleted Items folder if enabled
-            folder_names = ["Inbox", "Sent Items"]
-            if self.outlook.process_deleted_items:
-                folder_names.append("Deleted Items")
-                
+            # Connect to IMAP server
+            await ctx.report_progress(5, "Connecting to IMAP server")
+            self.imap.connect()
+            
+            # Process inbox only
+            folder_names = ["Inbox"]
+            
             await ctx.report_progress(10, f"Retrieving emails from {', '.join(folder_names)}")
             
-            all_emails = []
-            for i, mailbox in enumerate(outlook_mailboxes):
-                try:
-                    emails = self.outlook.get_emails_within_date_range(
-                        folder_names,
-                        start.isoformat(),
-                        end.isoformat(),
-                        [mailbox]
-                    )
-                    
-                    if emails:
-                        all_emails.extend(emails)
-                    
-                    progress = 10 + (40 * (i + 1) / len(outlook_mailboxes))
-                    await ctx.report_progress(progress, f"Processing mailbox {i+1}/{len(outlook_mailboxes)}")
-                except Exception:
-                    continue
+            try:
+                all_emails = self.imap.get_emails_within_date_range(
+                    folder_names,
+                    start.isoformat(),
+                    end.isoformat(),
+                    None
+                )
+                
+                await ctx.report_progress(50, f"Retrieved {len(all_emails)} emails from inbox")
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Failed to retrieve emails from IMAP: {str(e)}"
+                }
+            finally:
+                # Disconnect from IMAP
+                self.imap.disconnect()
 
             if not all_emails:
                 return {
@@ -204,15 +201,17 @@ try:
     config = {
         "MONGODB_URI": os.environ.get("MONGODB_URI"),
         "SQLITE_DB_PATH": os.environ.get("SQLITE_DB_PATH"),
-        "EMBEDDING_BASE_URL": os.environ.get("EMBEDDING_BASE_URL"),
-        "EMBEDDING_MODEL": os.environ.get("EMBEDDING_MODEL"),
-        "COLLECTION_NAME": os.environ.get("COLLECTION_NAME"),
-        "PROCESS_DELETED_ITEMS": os.environ.get("PROCESS_DELETED_ITEMS", "false")
+        "SARVAM_API_KEY": os.environ.get("SARVAM_API_KEY"),
+        "EMAIL_ADDRESS": os.environ.get("EMAIL_ADDRESS"),
+        "EMAIL_PASSWORD": os.environ.get("EMAIL_PASSWORD"),
+        "IMAP_SERVER": os.environ.get("IMAP_SERVER", "outlook.office365.com"),
+        "IMAP_PORT": os.environ.get("IMAP_PORT", "993"),
+        "COLLECTION_NAME": os.environ.get("COLLECTION_NAME")
     }
 
     # Log environment variables for debugging
     logging.info("Environment variables:")
-    # Redact sensitive information from MongoDB URI
+    # Redact sensitive information
     mongodb_uri = os.environ.get('MONGODB_URI', '')
     if mongodb_uri:
         # Simple redaction that keeps the host but hides credentials
@@ -222,10 +221,12 @@ try:
             redacted_uri = 'mongodb://' + mongodb_uri.split('@', 1)[1]
         logging.info(f"MONGODB_URI: {redacted_uri}")
     logging.info(f"SQLITE_DB_PATH: {os.environ.get('SQLITE_DB_PATH')}")
-    logging.info(f"EMBEDDING_BASE_URL: {os.environ.get('EMBEDDING_BASE_URL')}")
-    logging.info(f"EMBEDDING_MODEL: {os.environ.get('EMBEDDING_MODEL')}")
+    logging.info(f"SARVAM_API_KEY: {'***' + os.environ.get('SARVAM_API_KEY', '')[-4:] if os.environ.get('SARVAM_API_KEY') else 'Not set'}")
+    logging.info(f"EMAIL_ADDRESS: {os.environ.get('EMAIL_ADDRESS')}")
+    logging.info(f"EMAIL_PASSWORD: {'***' if os.environ.get('EMAIL_PASSWORD') else 'Not set'}")
+    logging.info(f"IMAP_SERVER: {os.environ.get('IMAP_SERVER', 'outlook.office365.com')}")
+    logging.info(f"IMAP_PORT: {os.environ.get('IMAP_PORT', '993')}")
     logging.info(f"COLLECTION_NAME: {os.environ.get('COLLECTION_NAME')}")
-    logging.info(f"PROCESS_DELETED_ITEMS: {os.environ.get('PROCESS_DELETED_ITEMS', 'false')}")
     
     # Validate configuration
     validate_config(config)
@@ -252,6 +253,11 @@ def cleanup_resources():
             if hasattr(processor, 'embedding_processor') and hasattr(processor.embedding_processor, 'mongodb_handler'):
                 processor.embedding_processor.mongodb_handler.close()
                 logging.info("MongoDB connection closed during shutdown")
+            
+            # Disconnect from IMAP
+            if hasattr(processor, 'imap'):
+                processor.imap.disconnect()
+                logging.info("IMAP connection closed during shutdown")
     except Exception as e:
         logging.error(f"Error during cleanup: {str(e)}")
 
@@ -264,12 +270,12 @@ async def process_emails(
     mailboxes: List[str],
     ctx: Context = None
 ) -> str:
-    """Process emails from specified date range and mailboxes.
+    """Process emails from specified date range from your inbox.
     
     Args:
         start_date: Start date in ISO format (YYYY-MM-DD)
         end_date: End date in ISO format (YYYY-MM-DD)
-        mailboxes: List of mailbox names or ["All"] for all mailboxes
+        mailboxes: List parameter (kept for compatibility, but inbox is always used)
     """
     try:
         # Validate date formats

@@ -3,16 +3,13 @@ name = "mcp-server-outlook-email"
 version = "0.1.0"
 description = "Email Processing MCP Server with MongoDB integration"
 dependencies = [
-    "pywin32",
     "python-dotenv",
-    "langchain",
-    "langchain_core",
-    "langchain-community",
-    "langchain-ollama",
     "pymongo",
     "fastmcp",
     "pydantic",
     "pytz",
+    "imapclient",
+    "requests",
 ]
 
 [build-system]

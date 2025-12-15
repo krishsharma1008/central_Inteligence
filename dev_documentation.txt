@@ -1,0 +1,300 @@
+===============================================================================
+DEVELOPMENT DOCUMENTATION - Central Intelligence Email Processing MCP Server
+===============================================================================
+
+-------------------------------------------------------------------------------
+UPDATE: Monday, December 15, 2025 - 12:34 PM IST
+-------------------------------------------------------------------------------
+
+## Major Architecture Overhaul: IMAP Integration & Sarvam AI Implementation
+
+### Summary
+Completed a comprehensive migration from Windows-only Outlook COM connector to 
+cross-platform IMAP-based email access, and replaced Ollama with Sarvam AI for 
+embeddings and email analysis. This makes the system platform-independent and 
+adds intelligent email analysis capabilities.
+
+### Changes Implemented
+
+#### 1. Dependencies Update (pyproject.toml)
+- REMOVED: langchain-ollama, pywin32 (Windows-only), langchain, langchain_core, 
+  langchain-community
+- ADDED: imapclient (IMAP support), requests (HTTP client for API calls)
+- RETAINED: pymongo, fastmcp, pydantic, pytz, python-dotenv
+- Result: Reduced dependencies and cross-platform compatibility
+
+#### 2. New IMAP Email Connector (src/IMAPConnector.py)
+Created comprehensive IMAP connector with following features:
+- SSL/TLS connection to Outlook/Office 365 (port 993)
+- Email authentication via app passwords
+- Date range filtering for email retrieval
+- MIME header decoding for international characters
+- Email body extraction (text/plain and text/html)
+- Email metadata parsing (subject, sender, recipients, date)
+- Compatibility layer with existing EmailMetadata structure
+- Automatic connection management and cleanup
+- Retry logic for connection failures
+
+Key Methods:
+- connect(): Establishes IMAP connection with retry logic
+- disconnect(): Safely closes IMAP connection
+- get_emails_within_date_range(): Retrieves emails from inbox with date filtering
+- decode_mime_header(): Handles encoded email headers
+- clean_email_body(): Sanitizes email content for storage
+- parse_date(): Converts email dates to UTC datetime objects
+
+#### 3. Sarvam AI Client Integration (src/SarvamClient.py)
+Created new client wrapper for Sarvam AI API with:
+- Embeddings generation (currently using fallback method until API available)
+- Email analysis using chat/completions endpoint
+- Structured analysis output:
+  * Summary (2-3 sentences)
+  * Key points (bullet format)
+  * Sentiment analysis (positive/negative/neutral)
+  * Category classification (work/personal/spam/marketing)
+  * Action items extraction
+- Retry logic with exponential backoff
+- Rate limiting protection
+- Error handling with fallback responses
+- Batch processing capabilities
+
+API Endpoints Used:
+- POST /chat/completions: Email analysis and summarization
+- (Future) POST /embeddings: Vector embeddings generation
+
+#### 4. Embedding Processor Refactor (src/tools/embedding_processor.py)
+Modified to use Sarvam AI instead of Ollama:
+- Updated __init__ to accept sarvam_api_key parameter
+- Replaced OllamaEmbeddings with SarvamClient
+- Added email analysis to process_batch() method
+- Integrated analysis results into metadata before MongoDB storage
+- Maintained backward compatibility with existing data structure
+- Enhanced error handling for API failures
+
+#### 5. Main Server Configuration Update (src/mcp_server.py)
+Comprehensive updates to server initialization and configuration:
+
+Dependencies:
+- Replaced OutlookConnector with IMAPConnector
+- Removed langchain_ollama imports
+- Added SarvamClient import
+
+Configuration Validation:
+- New required env vars: SARVAM_API_KEY, EMAIL_ADDRESS, EMAIL_PASSWORD
+- Removed: EMBEDDING_BASE_URL, EMBEDDING_MODEL, PROCESS_DELETED_ITEMS
+- Added optional: IMAP_SERVER (default: outlook.office365.com), IMAP_PORT (default: 993)
+
+EmailProcessor Class:
+- Replaced Outlook COM connector with IMAP connector
+- Updated initialization to pass Sarvam API key to embedding processor
+- Modified email retrieval to use IMAP
+- Simplified to inbox-only processing (removed multi-mailbox support)
+- Added IMAP connect/disconnect in process_emails workflow
+
+Email Processing Flow:
+1. Connect to IMAP server
+2. Retrieve emails from inbox only (no Sent Items or Deleted Items)
+3. Store emails in SQLite
+4. Generate embeddings via Sarvam AI
+5. Analyze emails via Sarvam AI
+6. Store embeddings and analysis in MongoDB
+7. Mark emails as processed
+8. Disconnect from IMAP
+
+Cleanup:
+- Added IMAP disconnection to cleanup_resources handler
+- Maintained existing SQLite and MongoDB cleanup
+
+#### 6. MongoDB Schema Extension (src/MongoDBHandler.py)
+Enhanced to store email analysis results:
+- Modified metadata sanitization to preserve 'analysis' dict structure
+- Analysis field contains JSON object with:
+  * summary: string
+  * key_points: array
+  * sentiment: string
+  * category: string
+  * action_items: array
+- Maintained backward compatibility with existing documents
+- Added special handling for nested analysis object
+
+#### 7. Comprehensive Documentation Update (README.md)
+Complete rewrite of documentation including:
+
+Prerequisites:
+- Updated to reflect cross-platform support (macOS, Linux, Windows)
+- Removed Ollama and Windows-only requirements
+- Added Sarvam AI API key requirement
+- Added IMAP access and app password requirements
+
+Installation:
+- Removed Ollama setup steps
+- Added detailed IMAP setup guide for Outlook/Office 365
+- Added app password creation instructions
+- Added Sarvam AI API key acquisition guide
+
+Configuration:
+- Provided separate examples for Windows and macOS/Linux
+- Updated environment variables with new requirements
+- Added security notes about credential management
+- Included example with actual configuration structure
+
+Features:
+- Updated to highlight inbox-only processing
+- Added email analysis capabilities description
+- Removed multi-mailbox support references
+- Added cross-platform compatibility notes
+
+Architecture:
+- Documented IMAP connector role
+- Explained Sarvam AI integration
+- Added data flow diagram
+- Described hybrid storage approach (SQLite + MongoDB)
+
+Debugging:
+- Added IMAP-specific troubleshooting
+- Added Sarvam AI debugging steps
+- Included IMAP connection test script
+- Enhanced error handling documentation
+
+Security:
+- Added app password best practices
+- Documented SSL/TLS encryption
+- Included credential management guidelines
+- Added two-factor authentication recommendations
+
+### Configuration Changes
+
+Old Environment Variables:
+- EMBEDDING_BASE_URL
+- EMBEDDING_MODEL
+- PROCESS_DELETED_ITEMS
+
+New Environment Variables:
+- SARVAM_API_KEY: sk_mghaeht5_ilQquPT4b9KSkC4iIlfRLfwZ
+- EMAIL_ADDRESS: User's Outlook/Office 365 email
+- EMAIL_PASSWORD: App-specific password for IMAP
+- IMAP_SERVER: outlook.office365.com (default)
+- IMAP_PORT: 993 (default)
+
+Retained Variables:
+- MONGODB_URI
+- SQLITE_DB_PATH
+- COLLECTION_NAME
+
+### Benefits of Changes
+
+1. **Cross-Platform Compatibility**
+   - Works on macOS, Linux, and Windows
+   - No dependency on Windows-specific COM objects
+   - Standard IMAP protocol support
+
+2. **Enhanced Security**
+   - App-specific passwords instead of main account password
+   - SSL/TLS encrypted IMAP connections
+   - Two-factor authentication support
+
+3. **Intelligent Analysis**
+   - Automatic email summarization
+   - Sentiment analysis
+   - Category classification
+   - Action item extraction
+   - Structured analysis storage
+
+4. **Simplified Processing**
+   - Inbox-only focus reduces complexity
+   - Single mailbox configuration
+   - Clearer user experience
+
+5. **Better Error Handling**
+   - Retry logic for network issues
+   - Fallback responses for API failures
+   - Detailed error messages
+
+6. **Scalability**
+   - API-based embeddings (no local model required)
+   - Cloud-based processing
+   - Rate limiting protection
+
+### Testing Recommendations
+
+1. Test IMAP connection with valid Outlook credentials
+2. Verify Sarvam AI API key authentication
+3. Test email retrieval with various date ranges
+4. Validate embedding generation
+5. Verify email analysis results structure
+6. Test MongoDB storage of analysis data
+7. Verify SQLite processing status tracking
+8. Test connection cleanup on shutdown
+9. Validate cross-platform functionality
+
+### Migration Notes for Users
+
+Users migrating from previous version need to:
+1. Obtain Sarvam AI API key from dashboard.sarvam.ai
+2. Enable IMAP in Outlook settings
+3. Create app password for IMAP access
+4. Update configuration with new environment variables
+5. Remove Ollama-related configuration
+6. Update Python dependencies (uv pip install -e .)
+
+### Known Limitations
+
+1. Sarvam AI embeddings API not yet publicly available
+   - Currently using fallback embedding method
+   - Will be updated when API becomes available
+
+2. Analysis API rate limits
+   - May need to implement request queuing for large volumes
+   - Consider batch size adjustments if rate limited
+
+3. IMAP performance
+   - May be slower than COM for very large inboxes
+   - Date range filtering helps manage load
+
+### Future Enhancements
+
+1. Implement proper Sarvam embeddings when API available
+2. Add semantic search capabilities
+3. Implement email drafting assistance
+4. Add rule suggestion based on patterns
+5. Support additional email providers (Gmail, etc.)
+6. Add caching for frequently accessed emails
+7. Implement incremental sync
+
+### Files Modified
+- pyproject.toml
+- src/mcp_server.py
+- src/tools/embedding_processor.py
+- src/MongoDBHandler.py
+- README.md
+
+### Files Created
+- src/IMAPConnector.py
+- src/SarvamClient.py
+
+### Files Deprecated
+- src/OutlookConnector.py (retained for reference, not actively used)
+
+### Code Quality Notes
+- All code follows existing patterns and conventions
+- Comprehensive error handling with logging
+- Type hints maintained throughout
+- Docstrings provided for all new functions and classes
+- Retry logic implemented for external services
+- Resource cleanup handlers properly implemented
+
+### Deployment Checklist
+- [ ] Update production configuration with new environment variables
+- [ ] Verify MongoDB is accessible
+- [ ] Test IMAP connectivity to Outlook
+- [ ] Validate Sarvam AI API key
+- [ ] Update Claude Desktop configuration
+- [ ] Test with small date range first
+- [ ] Monitor logs for errors
+- [ ] Verify email analysis results
+- [ ] Check MongoDB storage structure
+
+-------------------------------------------------------------------------------
+End of Update
+-------------------------------------------------------------------------------
+

@@ -64,9 +64,12 @@ class MongoDBHandler:
                     if not self.email_exists(str(embedding['id'])):
                         # Initialize and sanitize metadata
                         embedding['metadata'] = embedding.get('metadata', {})
-                        # Ensure all metadata values are primitive types
+                        # Ensure all metadata values are primitive types or allowed dicts
                         for key, value in embedding['metadata'].items():
-                            if isinstance(value, (list, dict)):
+                            # Keep 'analysis' as dict for structured storage
+                            if key == 'analysis' and isinstance(value, dict):
+                                continue
+                            elif isinstance(value, (list, dict)):
                                 embedding['metadata'][key] = str(value)
                             elif value is None:
                                 embedding['metadata'][key] = ''
