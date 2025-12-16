@@ -36,8 +36,8 @@ build/
 *.log
 
 # Databases
-*.sqlite3
-*.db
+# *.sqlite3
+# *.db
 test_chromadb/
 chroma
 chromadb
