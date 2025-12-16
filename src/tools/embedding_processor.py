@@ -6,7 +6,7 @@ import time
 import logging
 from typing import List, Dict, Any, Tuple
 from datetime import datetime
-from SarvamClient import SarvamClient
+from src.SarvamClient import SarvamClient
 
 # Configure logging
 logger = logging.getLogger('outlook-email.embedding')
@@ -22,7 +22,7 @@ class EmbeddingProcessor:
             sarvam_api_key: Sarvam API key for embeddings and analysis
         """
         # Import here to avoid circular imports
-        from MongoDBHandler import MongoDBHandler
+        from src.MongoDBHandler import MongoDBHandler
         
         # Initialize MongoDB handler
         self.mongodb_handler = MongoDBHandler(

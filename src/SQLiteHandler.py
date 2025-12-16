@@ -6,7 +6,7 @@ import sys
 import logging
 import time
 import os
-from EmailMetadata import EmailMetadata
+from src.EmailMetadata import EmailMetadata
 
 import logging
 
