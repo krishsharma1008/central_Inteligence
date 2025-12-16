@@ -6,17 +6,31 @@ This MCP server provides email processing capabilities with MongoDB integration 
 
 ## Features
 
-- Process emails from Outlook/Office 365 via IMAP with date range filtering
+### Email Ingestion
+- Process emails from Outlook/Office 365 via IMAP or Microsoft Graph API
 - Cross-platform support (macOS, Linux, Windows)
-- Store emails in SQLite database with proper connection management
-- Generate vector embeddings using Sarvam AI API
-- Automatic email analysis and summarization using Sarvam AI
+- Store emails in SQLite database with FTS5 full-text search
+- Automatic date range filtering
 - Inbox-only processing for focused email management
+
+### AI-Powered Search (NEW!)
+- **RAG-based email search**: Ask questions in natural language
+- **Thread-aware retrieval**: Automatically groups emails by conversation and provides full thread context
+- **Enhanced recall**: Intelligent keyword extraction and query expansion for better search results
+- **Hybrid retrieval**: SQLite FTS5 + vector similarity reranking
+- **Local embeddings**: sentence-transformers (no API costs, runs offline)
+- **Sarvam AI answering**: Grounded responses with citations
+- **Web UI**: Clean Next.js interface for search and email preview
+
+### Storage & Embeddings
+- SQLite with FTS5 for fast full-text search
+- MongoDB for vector embeddings storage
+- Real local embeddings using sentence-transformers (384-dim)
+- Automatic email analysis and summarization using Sarvam AI
 - Structured email analysis with sentiment, categorization, and action items
 
 ## Upcoming Features
 
-- Email search with semantic capabilities
 - Advanced filtering options
 - Customizable email reports
 - Email drafting suggestions
@@ -191,12 +205,25 @@ Process emails from your inbox for a specified date range:
 ```
 
 The tool will:
-1. Connect to your Outlook/Office 365 account via IMAP
-2. Retrieve emails from your Inbox folder only
-3. Store emails in SQLite database
-4. Generate embeddings using Sarvam AI
+1. Connect to your Outlook/Office 365 account via Microsoft Graph API
+2. Retrieve emails from your Inbox folder only (with paging support)
+3. Store emails in SQLite database with thread metadata (conversationId)
+4. Generate embeddings using sentence-transformers
 5. Analyze emails using Sarvam AI (summary, sentiment, category, action items)
 6. Store embeddings and analysis results in MongoDB
+
+### 2. sync_all_emails (NEW)
+Sync all emails from your mailbox using Graph delta query for full mailbox history:
+- More efficient than date-range queries for initial sync
+- Automatically handles paging
+- Stores delta link for future incremental syncs
+- Processes embeddings and analysis for all emails
+
+### 3. sync_incremental (NEW)
+Sync only new/changed emails since last delta sync:
+- Uses stored delta link to fetch only updates
+- Fast incremental updates
+- Automatically processes new embeddings
 
 
 ## Example Usage in Claude
@@ -216,19 +243,23 @@ The system will automatically analyze each email and provide:
 
 The server uses a hybrid approach with AI-powered analysis:
 
-1. **IMAP Connector**:
-   - Cross-platform email access via IMAP protocol
-   - Connects to Outlook/Office 365 securely
-   - Retrieves emails from inbox with date filtering
-   - Parses email content (subject, body, sender, recipients)
+1. **Graph API Connector**:
+   - Microsoft Graph API integration for email access
+   - Retrieves emails with full thread metadata (conversationId, conversationIndex)
+   - Supports paging for large result sets
+   - Delta sync support for efficient full mailbox history sync
+   - Parses email content (subject, body, sender, recipients, thread info)
 
 2. **SQLite Database**:
-   - Primary email storage
-   - Full-text search capabilities
+   - Primary email storage with thread support
+   - Stores conversationId, conversationIndex, internetMessageId for thread grouping
+   - Full-text search capabilities (FTS5)
+   - Thread-aware queries (fetch all messages in a conversation)
    - Processing status tracking
-   - Efficient filtering
+   - Efficient filtering and indexing
    - Directory is created automatically if it doesn't exist
    - Connections are properly closed to prevent database locking
+   - Backward-compatible schema migration for thread fields
 
 3. **Sarvam AI Integration**:
    - Vector embeddings generation for semantic search
@@ -293,6 +324,119 @@ The server implements proper resource management to prevent issues:
 - Rotate app passwords periodically
 - Monitor API usage to detect unusual activity
 - Review processed emails regularly
+
+## Email RAG Search UI
+
+The system now includes a complete RAG (Retrieval-Augmented Generation) search interface for querying your emails with natural language.
+
+### Running the API Server
+
+1. **Set environment variables** (see Configuration section above)
+
+2. **Install dependencies** (if not already done):
+```bash
+cd "/Users/krishsharma/Desktop/central inteligence"
+source .venv/bin/activate
+uv pip install -e .
+```
+
+3. **Run the FastAPI server**:
+```bash
+python src/web_api.py
+```
+
+The API will start on `http://localhost:8000` by default. You can change the port with `API_PORT` environment variable.
+
+#### API Endpoints
+
+- `GET /` - API information and available endpoints
+- `POST /query` - Ask a question about your emails
+  ```json
+  {
+    "question": "What did the client say about pricing?",
+    "top_k": 8
+  }
+  ```
+- `GET /emails` - List recent emails (with pagination)
+- `GET /emails/{id}` - Get a specific email by ID
+- `GET /health` - Health check for all services (SQLite, MongoDB, Sarvam API)
+
+### Running the Web UI
+
+1. **Install Node.js dependencies**:
+```bash
+cd web
+npm install
+```
+
+2. **Set the API URL** (optional, defaults to `http://localhost:8000`):
+```bash
+export NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+3. **Run the development server**:
+```bash
+npm run dev
+```
+
+The web UI will be available at `http://localhost:3000`.
+
+### Using the Email Search
+
+1. **Ingest emails** (using the MCP server or `run_process.py`)
+2. **Start the API server** (see above)
+3. **Start the web UI** (see above)
+4. **Open your browser** to `http://localhost:3000`
+5. **Ask questions** like:
+   - "What did the sales team discuss with the client?"
+   - "What pricing was mentioned in recent emails?"
+   - "What are the action items from the operations team?"
+
+The system will:
+- Build enhanced queries with keyword extraction for better recall
+- Search emails using full-text search (FTS5)
+- Group results by conversation thread
+- Fetch all messages in top threads for complete context
+- Optionally rerank using vector similarity
+- Generate an answer using Sarvam AI based on full thread context
+- Provide citations with links to view full emails
+
+**Thread-Aware Search**: When you ask "what happened with Hepstart", the system will:
+1. Find emails mentioning "Hepstart" (with variations like "hep start")
+2. Group matching emails by conversation thread
+3. Retrieve ALL messages in those threads (not just the matching ones)
+4. Present the full conversation context to the LLM
+5. Generate answers that understand the complete thread history
+
+### Configuration for RAG
+
+Add these environment variables to your configuration:
+
+```bash
+# Existing variables
+MONGODB_URI=...
+SQLITE_DB_PATH=...
+SARVAM_API_KEY=...
+COLLECTION_NAME=...
+
+# RAG-specific variables
+EMBEDDING_MODEL_NAME=sentence-transformers/all-MiniLM-L6-v2  # Default model
+EMBEDDING_DIM=384  # Default dimension
+RAG_TOP_K=8  # Number of emails to retrieve
+ENABLE_VECTOR_RERANK=true  # Enable vector reranking
+SARVAM_MODEL=sarvam-1  # Sarvam chat model
+API_PORT=8000  # API server port
+```
+
+### Testing
+
+Run unit tests to verify the system:
+
+```bash
+cd "/Users/krishsharma/Desktop/central inteligence"
+source .venv/bin/activate
+python -m unittest discover tests
+```
 
 ## Debugging
 

@@ -49,6 +49,13 @@ class EmailMetadata:
     Categories: str
     GeneratedCategories: Optional[List[str]] = field(default_factory=list)
     embedding: Optional[List[float]] = field(default_factory=list)
+    ConversationId: Optional[str] = None
+    ConversationIndex: Optional[str] = None
+    InternetMessageId: Optional[str] = None
+    InReplyTo: Optional[str] = None
+    CcRecipients: Optional[str] = None
+    ReplyTo: Optional[str] = None
+    BodyPreview: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert email metadata to a dictionary with validation."""
@@ -79,7 +86,14 @@ class EmailMetadata:
                 "UnRead": bool(getattr(self, 'UnRead', False)),
                 "Categories": sanitize_text(getattr(self, 'Categories', '')),
                 "GeneratedCategories": ', '.join(sanitize_text(cat) for cat in (getattr(self, 'GeneratedCategories', []) or [])),
-                "embedding": self.embedding if isinstance(getattr(self, 'embedding', None), list) else []
+                "embedding": self.embedding if isinstance(getattr(self, 'embedding', None), list) else [],
+                "ConversationId": sanitize_text(getattr(self, 'ConversationId', '') or ''),
+                "ConversationIndex": sanitize_text(getattr(self, 'ConversationIndex', '') or ''),
+                "InternetMessageId": sanitize_text(getattr(self, 'InternetMessageId', '') or ''),
+                "InReplyTo": sanitize_text(getattr(self, 'InReplyTo', '') or ''),
+                "CcRecipients": sanitize_text(getattr(self, 'CcRecipients', '') or ''),
+                "ReplyTo": sanitize_text(getattr(self, 'ReplyTo', '') or ''),
+                "BodyPreview": sanitize_text(getattr(self, 'BodyPreview', '') or '')
             })
             
             # Sanitize the data
@@ -99,7 +113,14 @@ class EmailMetadata:
                 "UnRead": bool(raw_data["UnRead"]),
                 "Categories": sanitize_text(raw_data["Categories"]),
                 "GeneratedCategories": raw_data["GeneratedCategories"],
-                "embedding": raw_data["embedding"] if isinstance(raw_data["embedding"], list) else []
+                "embedding": raw_data["embedding"] if isinstance(raw_data["embedding"], list) else [],
+                "ConversationId": raw_data.get("ConversationId", ""),
+                "ConversationIndex": raw_data.get("ConversationIndex", ""),
+                "InternetMessageId": raw_data.get("InternetMessageId", ""),
+                "InReplyTo": raw_data.get("InReplyTo", ""),
+                "CcRecipients": raw_data.get("CcRecipients", ""),
+                "ReplyTo": raw_data.get("ReplyTo", ""),
+                "BodyPreview": raw_data.get("BodyPreview", "")
             }
             
             # Validate each field can be properly encoded as JSON

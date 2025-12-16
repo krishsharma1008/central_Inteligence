@@ -295,6 +295,307 @@ Users migrating from previous version need to:
 - [ ] Check MongoDB storage structure
 
 -------------------------------------------------------------------------------
+UPDATE: Monday, December 16, 2025 - 2:15 PM IST
+-------------------------------------------------------------------------------
+
+## Thread-Aware RAG Implementation
+
+### Summary
+Implemented comprehensive thread-aware email retrieval and RAG system to enable natural language queries that understand full email conversation context. This addresses the issue where queries like "what happened with Hepstart" were failing because the system couldn't retrieve and understand complete email threads.
+
+### Changes Implemented
+
+#### 1. Graph API Connector Enhancement (src/GraphConnector.py)
+Extended to fetch thread metadata and support full mailbox sync:
+- Added fields to Graph API query: conversationId, conversationIndex, internetMessageId, inReplyTo, ccRecipients, replyTo, bodyPreview
+- Implemented paging support: Automatically follows @odata.nextLink for large result sets
+- Added sync_all_emails() method: Uses Graph delta query (/messages/delta) for efficient full mailbox history sync
+- Stores and reuses deltaLink for incremental syncs
+- Enhanced error handling for paging failures
+
+Key Methods:
+- get_emails(): Enhanced with paging and thread fields
+- sync_all_emails(): New method for delta-based full sync
+- Headers and authentication remain unchanged
+
+#### 2. EmailMetadata Extension (src/EmailMetadata.py)
+Added thread-related fields to email metadata:
+- ConversationId: Microsoft Graph conversation identifier
+- ConversationIndex: Position in conversation thread
+- InternetMessageId: RFC 822 message ID
+- InReplyTo: Reference to parent message
+- CcRecipients: CC recipients as comma-separated string
+- ReplyTo: Reply-to addresses
+- BodyPreview: Short preview of email body
+
+All fields are optional and backward-compatible with existing code.
+
+#### 3. SQLite Schema Migration (src/SQLiteHandler.py)
+Added thread support with backward-compatible migration:
+- New columns: conversation_id, conversation_index, internet_message_id
+- Migration uses ALTER TABLE IF NOT EXISTS pattern (safe for existing databases)
+- New indices: idx_conversation_id, idx_conversation_time (for efficient thread queries)
+- Updated search_emails_fts() to return conversation_id in results
+- New method: get_emails_by_conversation_id() - fetches all messages in a thread
+- New metadata table: Stores delta links and sync state
+- New methods: get_metadata_value(), set_metadata_value() for sync state management
+
+#### 4. MongoDB Metadata Extension (src/tools/embedding_processor.py)
+Updated to store thread metadata in embedding documents:
+- Added ConversationId, ConversationIndex, InternetMessageId to metadata dict
+- Enables thread-aware vector reranking
+- Maintains backward compatibility with existing documents
+
+#### 5. Thread-Aware Query Service (src/rag/query_service.py)
+Complete rewrite of query processing for thread awareness:
+
+Enhanced Query Building:
+- _build_enhanced_query(): Extracts keywords, handles variations, builds OR queries
+- Better recall for queries like "hepstart" (also matches "hep start", etc.)
+- Filters stop words and focuses on meaningful keywords
+
+Thread Grouping and Retrieval:
+- Groups FTS results by conversation_id
+- Selects top threads by best match rank
+- Fetches ALL messages in top threads (not just matching ones)
+- Handles standalone emails (no conversation_id) gracefully
+
+Thread Context Building:
+- _build_thread_context(): New method that presents threads chronologically
+- Shows thread structure with message numbering
+- Larger body budget per message (1000 chars vs 500)
+- Preserves conversation flow for LLM understanding
+
+Updated Prompt:
+- Instructs LLM to cite by thread and message number
+- Emphasizes full conversation context
+- Better instructions for synthesizing across threads
+
+#### 6. Email Searcher Extension (src/rag/sqlite_search.py)
+Added thread retrieval support:
+- get_thread_emails(): Fetches all emails in a conversation thread
+- Used by QueryService to get complete thread context
+
+#### 7. MCP Server Tools (src/mcp_server.py)
+Added new tools for full mailbox sync:
+- sync_all_emails(): Full mailbox sync using Graph delta query
+  - Stores delta link for future incremental syncs
+  - Processes all emails with embeddings and analysis
+  - Progress reporting support
+- sync_incremental(): Incremental sync since last delta link
+  - Fast updates for new/changed emails only
+  - Automatically processes new embeddings
+
+#### 8. Comprehensive Tests (tests/test_thread_rag.py)
+New test suite covering:
+- Enhanced query building with keyword extraction
+- Thread grouping logic
+- Thread context building
+- EmailMetadata conversation fields
+- Thread retrieval functionality
+
+### Configuration Changes
+
+New Environment Variables:
+- None (all thread support is automatic)
+
+Enhanced Behavior:
+- Graph API now fetches thread metadata automatically
+- SQLite automatically migrates schema on first use
+- Query service automatically groups by threads
+- No user configuration required
+
+### Benefits of Changes
+
+1. **Complete Context Understanding**
+   - LLM sees full conversation threads, not isolated messages
+   - Answers reflect complete thread history
+   - Better understanding of email relationships
+
+2. **Improved Recall**
+   - Enhanced query building finds more relevant emails
+   - Keyword extraction handles variations (e.g., "hepstart" vs "hep start")
+   - Thread grouping ensures related messages are included
+
+3. **Efficient Full Mailbox Sync**
+   - Delta sync is more efficient than date-range queries
+   - Incremental syncs are fast (only new/changed emails)
+   - Automatic delta link management
+
+4. **Backward Compatibility**
+   - Existing databases automatically migrate
+   - Old emails without conversation_id still work
+   - No breaking changes to existing functionality
+
+5. **Better User Experience**
+   - Queries like "what happened with Hepstart" now work reliably
+   - Answers include full conversation context
+   - Citations reference complete threads
+
+### Testing Recommendations
+
+1. Test Graph API paging with large result sets
+2. Verify delta sync stores and reuses delta links
+3. Test thread grouping with various conversation structures
+4. Validate enhanced query building with different question formats
+5. Verify thread context includes all messages chronologically
+6. Test backward compatibility with existing databases
+7. Validate incremental sync only fetches new emails
+8. Test queries with company names (e.g., "Hepstart")
+
+### Migration Notes for Users
+
+Users upgrading need to:
+1. Run sync_all_emails() once to ingest full mailbox history with thread metadata
+2. Existing emails will get thread fields on next update
+3. No configuration changes required
+4. Database will automatically migrate schema
+
+### Known Limitations
+
+1. Thread grouping requires conversationId from Graph API
+   - Some old emails may not have conversationId
+   - These are handled as standalone emails
+
+2. Large threads may exceed token limits
+   - Current limit: 1000 chars per message
+   - Very long threads may be truncated
+
+3. Delta sync requires Graph API permissions
+   - Mail.Read permission required
+   - Delta links expire after 7 days of inactivity
+
+### Future Enhancements
+
+1. Thread summarization for very long conversations
+2. Smart thread selection (prioritize recent/important threads)
+3. Cross-thread relationship detection
+4. Thread visualization in UI
+5. Conversation-level embeddings
+
+### Files Modified
+- src/GraphConnector.py
+- src/EmailMetadata.py
+- src/SQLiteHandler.py
+- src/mcp_server.py
+- src/tools/embedding_processor.py
+- src/rag/query_service.py
+- src/rag/sqlite_search.py
+- README.md
+
+### Files Created
+- tests/test_thread_rag.py
+
+### Code Quality Notes
+- All changes maintain backward compatibility
+- Comprehensive error handling and logging
+- Type hints maintained throughout
+- Docstrings provided for all new methods
+- Migration logic is safe and idempotent
+- Tests cover key functionality
+
+### Deployment Checklist
+- [ ] Test Graph API authentication with new fields
+- [ ] Verify SQLite migration on existing databases
+- [ ] Test sync_all_emails with full mailbox
+- [ ] Validate thread grouping with real email data
+- [ ] Test queries with company names (Hepstart, etc.)
+- [ ] Verify incremental sync works correctly
+- [ ] Check MongoDB metadata includes thread fields
+- [ ] Monitor logs for any migration issues
+
+-------------------------------------------------------------------------------
+UPDATE: Tuesday, December 16, 2025 - 2:42 PM IST
+-------------------------------------------------------------------------------
+
+## Relevance Filtering for Citations
+
+### Summary
+Implemented keyword-based relevance filtering to ensure only emails that actually match the search query are included in citations. This fixes the issue where irrelevant emails (like "Test email") were being included in search results.
+
+### Changes Implemented
+
+#### 1. Keyword Extraction (src/rag/query_service.py)
+Added `_extract_keywords()` method:
+- Extracts meaningful keywords from user questions
+- Filters out common stop words (the, what, when, where, who, why, how, give, me, brief, tell, show, find, search, query)
+- Focuses on keywords with length > 2 characters
+- Returns list of keywords for relevance checking
+
+#### 2. Relevance Checking (src/rag/query_service.py)
+Added `_is_email_relevant()` method:
+- Checks if an email contains any of the extracted keywords
+- Searches in both subject and body (with HTML stripped)
+- Case-insensitive matching
+- Returns True if email is relevant, False otherwise
+
+#### 3. Thread Filtering (src/rag/query_service.py)
+Enhanced thread retrieval to filter for relevance:
+- When fetching all emails in a thread, only includes emails that match the search query
+- Prevents irrelevant emails in the same conversation from being included
+- Only adds threads that have at least one relevant email
+
+#### 4. Citation Filtering (src/rag/query_service.py)
+Updated `_build_citations()` method:
+- Filters citations to only include relevant emails
+- Uses keyword-based relevance check before adding to citations
+- Cleans HTML from email snippets for better display
+- Ensures citations only show emails that match the query
+
+### Configuration Changes
+
+No new environment variables required. Filtering is automatic and uses the same keywords extracted from the user's question.
+
+### Benefits of Changes
+
+1. **Accurate Citations**
+   - Only emails that match the search query are shown
+   - Eliminates false positives (e.g., "Test email" for "hepstar" queries)
+   - Better user experience with relevant results only
+
+2. **Improved Precision**
+   - Keyword extraction focuses on meaningful terms
+   - Stop word filtering reduces noise
+   - Case-insensitive matching handles variations
+
+3. **Thread-Aware Filtering**
+   - Filters emails within threads, not just top-level results
+   - Prevents irrelevant emails in same conversation from appearing
+   - Maintains thread context while ensuring relevance
+
+4. **Backward Compatible**
+   - No breaking changes to existing functionality
+   - Works with all existing queries
+   - Automatic filtering requires no user configuration
+
+### Testing Recommendations
+
+1. Test with queries containing company names (e.g., "hepstar")
+2. Verify irrelevant emails are excluded from citations
+3. Test with multi-word queries to ensure keyword extraction works
+4. Validate thread filtering excludes non-matching emails in conversations
+5. Test with edge cases (empty keywords, very short queries)
+
+### Known Limitations
+
+1. Keyword extraction may miss some relevant emails if query uses synonyms
+   - Future: Could add synonym expansion or semantic matching
+
+2. Stop word list may need adjustment for domain-specific terms
+   - Currently filters common English stop words
+   - Can be extended if needed
+
+### Files Modified
+- src/rag/query_service.py
+
+### Code Quality Notes
+- All changes maintain backward compatibility
+- Comprehensive error handling
+- Type hints maintained
+- Docstrings provided for all new methods
+- Keyword extraction is case-insensitive and robust
+
+-------------------------------------------------------------------------------
 End of Update
 -------------------------------------------------------------------------------
 

@@ -59,12 +59,9 @@ class SQLiteHandler:
         """Create necessary database tables if they don't exist."""
         cursor = self.conn.cursor()
         
-        # Drop and recreate emails table
-        cursor.execute('DROP TABLE IF EXISTS emails')
-        
-        # Create main emails table
+        # Create main emails table (no drop - preserve existing data)
         cursor.execute('''
-        CREATE TABLE emails (
+        CREATE TABLE IF NOT EXISTS emails (
             id TEXT PRIMARY KEY,
             account TEXT NOT NULL,
             folder TEXT NOT NULL,
@@ -84,10 +81,88 @@ class SQLiteHandler:
         )
         ''')
         
-        # Create optimized indices
-        cursor.execute('CREATE INDEX idx_folder ON emails(folder)')
-        cursor.execute('CREATE INDEX idx_received_time ON emails(received_time)')
-        cursor.execute('CREATE INDEX idx_processed ON emails(processed)')
+        # Migrate: Add thread columns if they don't exist (backward compatible)
+        try:
+            cursor.execute('ALTER TABLE emails ADD COLUMN conversation_id TEXT')
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        try:
+            cursor.execute('ALTER TABLE emails ADD COLUMN conversation_index TEXT')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('ALTER TABLE emails ADD COLUMN internet_message_id TEXT')
+        except sqlite3.OperationalError:
+            pass
+
+        # Create optimized indices (IF NOT EXISTS implicit in SQLite for index creation errors)
+        try:
+            cursor.execute('CREATE INDEX idx_folder ON emails(folder)')
+        except sqlite3.OperationalError:
+            pass  # Index already exists
+        try:
+            cursor.execute('CREATE INDEX idx_received_time ON emails(received_time)')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('CREATE INDEX idx_processed ON emails(processed)')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('CREATE INDEX idx_conversation_id ON emails(conversation_id)')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('CREATE INDEX idx_conversation_time ON emails(conversation_id, received_time)')
+        except sqlite3.OperationalError:
+            pass
+        
+        # Create metadata table for storing sync state, delta links, etc.
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
+        
+        # Create FTS5 virtual table for full-text search
+        cursor.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
+            id UNINDEXED,
+            subject,
+            body,
+            sender_name,
+            sender_email,
+            recipients,
+            content='emails',
+            content_rowid='rowid'
+        )
+        ''')
+        
+        # Create triggers to keep FTS index in sync with emails table
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS emails_ai AFTER INSERT ON emails BEGIN
+            INSERT INTO emails_fts(rowid, id, subject, body, sender_name, sender_email, recipients)
+            VALUES (new.rowid, new.id, new.subject, new.body, new.sender_name, new.sender_email, new.recipients);
+        END
+        ''')
+        
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS emails_ad AFTER DELETE ON emails BEGIN
+            INSERT INTO emails_fts(emails_fts, rowid, id, subject, body, sender_name, sender_email, recipients)
+            VALUES('delete', old.rowid, old.id, old.subject, old.body, old.sender_name, old.sender_email, old.recipients);
+        END
+        ''')
+        
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS emails_au AFTER UPDATE ON emails BEGIN
+            INSERT INTO emails_fts(emails_fts, rowid, id, subject, body, sender_name, sender_email, recipients)
+            VALUES('delete', old.rowid, old.id, old.subject, old.body, old.sender_name, old.sender_email, old.recipients);
+            INSERT INTO emails_fts(rowid, id, subject, body, sender_name, sender_email, recipients)
+            VALUES (new.rowid, new.id, new.subject, new.body, new.sender_name, new.sender_email, new.recipients);
+        END
+        ''')
         
         self.conn.commit()
 
@@ -141,7 +216,10 @@ class SQLiteHandler:
                     'processed': bool(email_dict.get('embedding')),
                     'last_updated': datetime.now().isoformat(),
                     'body': email_dict.get('Body'),
-                    'attachments': email_dict.get('Attachments', '')
+                    'attachments': email_dict.get('Attachments', ''),
+                    'conversation_id': email_dict.get('ConversationId', '') or None,
+                    'conversation_index': email_dict.get('ConversationIndex', '') or None,
+                    'internet_message_id': email_dict.get('InternetMessageId', '') or None
                 }
                 
                 # Validate required fields
@@ -174,11 +252,13 @@ class SQLiteHandler:
                     INSERT INTO emails (
                         id, account, folder, subject, sender_name, sender_email,
                         received_time, sent_time, recipients, is_task, unread,
-                        categories, processed, last_updated, body, attachments
+                        categories, processed, last_updated, body, attachments,
+                        conversation_id, conversation_index, internet_message_id
                     ) VALUES (
                         :id, :account, :folder, :subject, :sender_name, :sender_email,
                         :received_time, :sent_time, :recipients, :is_task, :unread,
-                        :categories, :processed, :last_updated, :body, :attachments
+                        :categories, :processed, :last_updated, :body, :attachments,
+                        :conversation_id, :conversation_index, :internet_message_id
                     )
                     ''', data)
                     
@@ -313,6 +393,344 @@ class SQLiteHandler:
         except Exception as e:
             logger.error(f"Error getting email count: {str(e)}", exc_info=True)
             return 0
+    
+    def search_emails_fts(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search emails using FTS5 full-text search.
+        Handles case-insensitive search by normalizing query terms.
+        
+        Args:
+            query (str): Search query (FTS5 syntax supported)
+            limit (int): Maximum number of results to return
+            
+        Returns:
+            List[Dict[str, Any]]: List of matching emails with rank scores
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Normalize query for case-insensitive search
+            # FTS5 is case-sensitive, so we need to handle this
+            # For simple queries, try both case variations
+            normalized_query = self._normalize_fts_query(query)
+            
+            # Use FTS5 MATCH with rank scoring
+            cursor.execute('''
+            SELECT 
+                e.id,
+                e.account,
+                e.folder,
+                e.subject,
+                e.sender_name,
+                e.sender_email,
+                e.received_time,
+                e.sent_time,
+                e.recipients,
+                e.body,
+                e.attachments,
+                e.categories,
+                e.is_task,
+                e.unread,
+                e.conversation_id,
+                fts.rank
+            FROM emails_fts fts
+            INNER JOIN emails e ON e.rowid = fts.rowid
+            WHERE emails_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            ''', (normalized_query, limit))
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'id': row[0],
+                    'account': row[1],
+                    'folder': row[2],
+                    'subject': row[3],
+                    'sender_name': row[4],
+                    'sender_email': row[5],
+                    'received_time': row[6],
+                    'sent_time': row[7],
+                    'recipients': row[8],
+                    'body': row[9],
+                    'attachments': row[10],
+                    'categories': row[11],
+                    'is_task': row[12],
+                    'unread': row[13],
+                    'conversation_id': row[14],
+                    'rank': row[15]
+                })
+            
+            logger.info(f"FTS search for '{query}' returned {len(results)} results")
+            
+            # If FTS returns no results, fallback to LIKE search for case-insensitive matching
+            if len(results) == 0:
+                logger.info("FTS returned no results, trying case-insensitive LIKE fallback")
+                return self._fallback_like_search(query, limit)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error performing FTS search: {str(e)}", exc_info=True)
+            # Try fallback on error too
+            try:
+                return self._fallback_like_search(query, limit)
+            except Exception as e2:
+                logger.error(f"Error in fallback LIKE search: {str(e2)}", exc_info=True)
+                return []
+    
+    def _fallback_like_search(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fallback case-insensitive LIKE search when FTS5 returns no results.
+        
+        Args:
+            query (str): Search query
+            limit (int): Maximum number of results to return
+            
+        Returns:
+            List[Dict[str, Any]]: List of matching emails
+        """
+        try:
+            cursor = self.conn.cursor()
+            
+            # Extract search terms (remove FTS operators)
+            import re
+            # Extract words from query, removing operators
+            terms = re.findall(r'\b\w+\b', query.lower())
+            if not terms:
+                return []
+            
+            # Build LIKE conditions for subject and body
+            like_conditions = []
+            params = []
+            for term in terms:
+                like_conditions.append('(LOWER(subject) LIKE ? OR LOWER(body) LIKE ?)')
+                params.extend([f'%{term}%', f'%{term}%'])
+            
+            where_clause = ' OR '.join(like_conditions)
+            
+            cursor.execute(f'''
+            SELECT 
+                id, account, folder, subject, sender_name, sender_email,
+                received_time, sent_time, recipients, body, attachments,
+                categories, is_task, unread, conversation_id
+            FROM emails
+            WHERE {where_clause}
+            ORDER BY received_time DESC
+            LIMIT ?
+            ''', params + [limit])
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'id': row[0],
+                    'account': row[1],
+                    'folder': row[2],
+                    'subject': row[3],
+                    'sender_name': row[4],
+                    'sender_email': row[5],
+                    'received_time': row[6],
+                    'sent_time': row[7],
+                    'recipients': row[8],
+                    'body': row[9],
+                    'attachments': row[10],
+                    'categories': row[11],
+                    'is_task': row[12],
+                    'unread': row[13],
+                    'conversation_id': row[14],
+                    'rank': 0.0  # No rank for LIKE search
+                })
+            
+            logger.info(f"LIKE fallback search returned {len(results)} results")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in fallback LIKE search: {str(e)}", exc_info=True)
+            return []
+    
+    def get_emails_by_conversation_id(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all emails in a conversation thread, ordered by received_time.
+        
+        Args:
+            conversation_id (str): Conversation ID to fetch
+            
+        Returns:
+            List[Dict[str, Any]]: List of emails in the conversation
+        """
+        if not conversation_id:
+            return []
+            
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+            SELECT 
+                id, account, folder, subject, sender_name, sender_email,
+                received_time, sent_time, recipients, body, attachments,
+                categories, is_task, unread, conversation_id, conversation_index,
+                internet_message_id
+            FROM emails
+            WHERE conversation_id = ?
+            ORDER BY received_time ASC
+            ''', (conversation_id,))
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'id': row[0],
+                    'account': row[1],
+                    'folder': row[2],
+                    'subject': row[3],
+                    'sender_name': row[4],
+                    'sender_email': row[5],
+                    'received_time': row[6],
+                    'sent_time': row[7],
+                    'recipients': row[8],
+                    'body': row[9],
+                    'attachments': row[10],
+                    'categories': row[11],
+                    'is_task': row[12],
+                    'unread': row[13],
+                    'conversation_id': row[14],
+                    'conversation_index': row[15],
+                    'internet_message_id': row[16]
+                })
+            
+            logger.info(f"Found {len(results)} emails in conversation {conversation_id}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error fetching emails by conversation_id: {str(e)}", exc_info=True)
+            return []
+
+    def _normalize_fts_query(self, query: str) -> str:
+        """
+        Normalize FTS query for better case-insensitive matching.
+        FTS5 is case-sensitive, so we expand queries to include case variations.
+        
+        Args:
+            query (str): Original query
+            
+        Returns:
+            str: Normalized query with case variations
+        """
+        import re
+        
+        # If query contains OR/AND/NOT operators, handle them carefully
+        if any(op in query.upper() for op in [' OR ', ' AND ', ' NOT ']):
+            # For complex queries, try to normalize individual terms
+            # Split by operators while preserving them
+            parts = re.split(r'(\s+(?:OR|AND|NOT)\s+)', query, flags=re.IGNORECASE)
+            normalized_parts = []
+            
+            for part in parts:
+                if part.upper().strip() in ['OR', 'AND', 'NOT']:
+                    normalized_parts.append(f' {part.upper()} ')
+                elif part.strip():
+                    # For each term, create case variations
+                    term = part.strip().strip('"')
+                    if term and not term.startswith('"'):
+                        # Create OR query with case variations
+                        variations = [
+                            term,  # Original
+                            term.lower(),  # Lowercase
+                            term.capitalize(),  # Capitalized
+                            term.upper()  # Uppercase
+                        ]
+                        # Remove duplicates while preserving order
+                        seen = set()
+                        unique_variations = []
+                        for v in variations:
+                            if v not in seen:
+                                seen.add(v)
+                                unique_variations.append(v)
+                        normalized_parts.append(f'({" OR ".join(unique_variations)})')
+                    else:
+                        normalized_parts.append(part)
+                else:
+                    normalized_parts.append(part)
+            
+            return ''.join(normalized_parts)
+        else:
+            # Simple query - create case variations
+            term = query.strip().strip('"')
+            if term:
+                variations = [term, term.lower(), term.capitalize(), term.upper()]
+                # Remove duplicates
+                seen = set()
+                unique_variations = []
+                for v in variations:
+                    if v not in seen:
+                        seen.add(v)
+                        unique_variations.append(v)
+                if len(unique_variations) > 1:
+                    return f'({" OR ".join(unique_variations)})'
+                else:
+                    return unique_variations[0]
+        
+        return query
+
+    def get_metadata_value(self, key: str) -> Optional[str]:
+        """
+        Get a metadata value by key.
+        
+        Args:
+            key (str): Metadata key
+            
+        Returns:
+            Optional[str]: Metadata value or None if not found
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('SELECT value FROM metadata WHERE key = ?', (key,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Error getting metadata value: {str(e)}", exc_info=True)
+            return None
+    
+    def set_metadata_value(self, key: str, value: str) -> bool:
+        """
+        Set a metadata value.
+        
+        Args:
+            key (str): Metadata key
+            value (str): Metadata value
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO metadata (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (key, value))
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error setting metadata value: {str(e)}", exc_info=True)
+            self.conn.rollback()
+            return False
+
+    def rebuild_fts_index(self) -> bool:
+        """
+        Rebuild the FTS5 index from scratch.
+        Useful if the index gets out of sync.
+        
+        Returns:
+            bool: True if successful
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
+            self.conn.commit()
+            logger.info("FTS index rebuilt successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error rebuilding FTS index: {str(e)}", exc_info=True)
+            self.conn.rollback()
+            return False
 
     def close(self) -> None:
         """Close the database connection."""

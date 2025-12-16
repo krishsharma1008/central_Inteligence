@@ -413,6 +413,129 @@ async def process_emails(
         return f"Error: {str(e)}"
 
 
+@mcp.tool()
+async def sync_all_emails(ctx: Context = None) -> str:
+    """Sync all emails from mailbox using Graph delta query.
+    This is more efficient than date-range queries for initial full sync.
+    Stores delta link for incremental syncs.
+
+    Returns:
+        str: Status message with count of emails synced
+    """
+    try:
+        await processor.safe_progress(ctx, 0, "Starting full mailbox sync with delta query")
+        
+        # Get stored delta link if exists
+        delta_link = processor.sqlite.get_metadata_value("graph_delta_link")
+        
+        await processor.safe_progress(ctx, 10, "Fetching emails from Microsoft Graph (delta sync)")
+        
+        emails, new_delta_link = processor.graph.sync_all_emails(delta_link=delta_link)
+        
+        if not emails:
+            return "No new emails found in delta sync"
+        
+        await processor.safe_progress(ctx, 30, f"Retrieved {len(emails)} emails from delta sync")
+        
+        # Store emails in SQLite
+        await processor.safe_progress(ctx, 40, "Storing emails in SQLite")
+        
+        total_stored = 0
+        for i, email in enumerate(emails):
+            if processor.sqlite.add_or_update_email(email):
+                total_stored += 1
+            
+            progress = 40 + int((30 * (i + 1)) / len(emails))
+            await processor.safe_progress(ctx, progress, f"Stored email {i+1}/{len(emails)}")
+        
+        if total_stored == 0:
+            return "No new emails to store"
+        
+        # Store new delta link
+        if new_delta_link:
+            processor.sqlite.set_metadata_value("graph_delta_link", new_delta_link)
+            await processor.safe_progress(ctx, 75, "Saved delta link for future incremental syncs")
+        
+        # Process embeddings
+        await processor.safe_progress(ctx, 80, "Processing embeddings")
+        
+        unprocessed = processor.sqlite.get_unprocessed_emails()
+        email_dicts = list(unprocessed)
+        
+        if not email_dicts:
+            return f"Successfully synced {total_stored} emails (no new embeddings to process)"
+        
+        total_processed, total_failed = processor.embedding_processor.process_batch(email_dicts)
+        
+        await processor.safe_progress(ctx, 90, "Marking emails as processed")
+        
+        for email in email_dicts[:total_processed]:
+            processor.sqlite.mark_as_processed(email["id"])
+        
+        await processor.safe_progress(ctx, 100, "Full sync complete")
+        
+        return (
+            f"Successfully synced {total_stored} emails, "
+            f"processed {total_processed} embeddings "
+            f"(failed: {total_failed})"
+        )
+    except Exception as e:
+        return f"Error during full sync: {str(e)}"
+
+
+@mcp.tool()
+async def sync_incremental(ctx: Context = None) -> str:
+    """Sync new emails since last delta sync.
+    Uses stored delta link to fetch only new/changed emails.
+
+    Returns:
+        str: Status message with count of new emails
+    """
+    try:
+        delta_link = processor.sqlite.get_metadata_value("graph_delta_link")
+        
+        if not delta_link:
+            return "Error: No delta link found. Please run sync_all_emails first."
+        
+        await processor.safe_progress(ctx, 0, "Starting incremental sync")
+        
+        emails, new_delta_link = processor.graph.sync_all_emails(delta_link=delta_link)
+        
+        if not emails:
+            return "No new emails found since last sync"
+        
+        await processor.safe_progress(ctx, 30, f"Retrieved {len(emails)} new/changed emails")
+        
+        total_stored = 0
+        for i, email in enumerate(emails):
+            if processor.sqlite.add_or_update_email(email):
+                total_stored += 1
+        
+        if new_delta_link:
+            processor.sqlite.set_metadata_value("graph_delta_link", new_delta_link)
+        
+        # Process new embeddings
+        unprocessed = processor.sqlite.get_unprocessed_emails()
+        email_dicts = list(unprocessed)
+        
+        if email_dicts:
+            total_processed, total_failed = processor.embedding_processor.process_batch(email_dicts)
+            for email in email_dicts[:total_processed]:
+                processor.sqlite.mark_as_processed(email["id"])
+        else:
+            total_processed = 0
+            total_failed = 0
+        
+        await processor.safe_progress(ctx, 100, "Incremental sync complete")
+        
+        return (
+            f"Successfully synced {total_stored} new emails, "
+            f"processed {total_processed} embeddings"
+        )
+    except Exception as e:
+        return f"Error during incremental sync: {str(e)}"
+
+
 if __name__ == "__main__":
     # Run the server
     mcp.run()

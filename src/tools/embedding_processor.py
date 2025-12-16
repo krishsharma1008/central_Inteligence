@@ -30,13 +30,25 @@ class EmbeddingProcessor:
             collection_name
         )
         
-        # Initialize Sarvam client
+        # Initialize Sarvam client for analysis
         try:
             self.sarvam_client = SarvamClient(api_key=sarvam_api_key)
             logger.info("Sarvam client initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing Sarvam client: {str(e)}")
             raise
+        
+        # Initialize sentence-transformers for real embeddings
+        try:
+            from sentence_transformers import SentenceTransformer
+            model_name = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
+            logger.info(f"Loading embedding model: {model_name}")
+            self.embedding_model = SentenceTransformer(model_name)
+            logger.info(f"Embedding model loaded successfully (dimension: {self.embedding_model.get_sentence_embedding_dimension()})")
+        except Exception as e:
+            logger.error(f"Error loading embedding model: {str(e)}")
+            logger.warning("Falling back to hash-based embeddings")
+            self.embedding_model = None
     
     def create_email_content(self, email: Dict[str, Any]) -> str:
         """Create a formatted string of email content for embedding."""
@@ -104,7 +116,10 @@ Date: {email.get('ReceivedTime', '')}
                     'To': email.get('To', ''),
                     'ReceivedTime': email.get('ReceivedTime', ''),
                     'Folder': email.get('Folder', ''),
-                    'AccountName': email.get('AccountName', '')
+                    'AccountName': email.get('AccountName', ''),
+                    'ConversationId': email.get('ConversationId', '') or None,
+                    'ConversationIndex': email.get('ConversationIndex', '') or None,
+                    'InternetMessageId': email.get('InternetMessageId', '') or None
                 }
                 
                 # Validate metadata can be JSON encoded
@@ -127,22 +142,30 @@ Date: {email.get('ReceivedTime', '')}
         
         # Process documents in batches
         try:
-            # Generate embeddings using Sarvam client
-            max_embed_retries = 3
+            # Generate embeddings using sentence-transformers
             embeddings = None
             
-            for embed_attempt in range(max_embed_retries):
+            if self.embedding_model is not None:
                 try:
-                    logger.info(f"Generating embeddings for {len(documents)} documents (attempt {embed_attempt + 1}/{max_embed_retries})")
-                    embeddings = self.sarvam_client.generate_embeddings(documents)
-                    logger.info(f"Successfully generated {len(embeddings)} embeddings")
-                    break
+                    logger.info(f"Generating real embeddings for {len(documents)} documents using sentence-transformers")
+                    # Normalize embeddings for cosine similarity
+                    embeddings_array = self.embedding_model.encode(
+                        documents, 
+                        normalize_embeddings=True,
+                        show_progress_bar=False
+                    )
+                    # Convert numpy arrays to lists for MongoDB storage
+                    embeddings = [emb.tolist() for emb in embeddings_array]
+                    logger.info(f"Successfully generated {len(embeddings)} real embeddings")
                 except Exception as e:
-                    logger.error(f"Error generating embeddings (attempt {embed_attempt + 1}/{max_embed_retries}): {str(e)}")
-                    if embed_attempt == max_embed_retries - 1:
-                        logger.error("Failed to generate embeddings after all retries")
-                        return 0, len(documents) + failed_count
-                    time.sleep(2)  # Wait before retry
+                    logger.error(f"Error generating embeddings with sentence-transformers: {str(e)}")
+                    logger.warning("Falling back to hash-based embeddings")
+                    embeddings = None
+            
+            # Fallback to hash-based embeddings if model not available
+            if embeddings is None:
+                logger.warning("Using fallback hash-based embeddings (vector search will not be meaningful)")
+                embeddings = self._generate_fallback_embeddings(documents)
             
             if not embeddings:
                 logger.error("No embeddings generated")
@@ -185,6 +208,37 @@ Date: {email.get('ReceivedTime', '')}
         except Exception as e:
             logger.error(f"Error processing batch: {str(e)}")
             return 0, len(documents) + failed_count
+    
+    def _generate_fallback_embeddings(self, texts: List[str], dimension: int = 384) -> List[List[float]]:
+        """
+        Generate fallback hash-based embeddings (for when sentence-transformers fails).
+        This is NOT suitable for meaningful vector search.
+        
+        Args:
+            texts (List[str]): Texts to embed
+            dimension (int): Embedding dimension
+            
+        Returns:
+            List[List[float]]: List of embedding vectors
+        """
+        import hashlib
+        
+        embeddings = []
+        for text in texts:
+            # Create a hash of the text
+            text_hash = hashlib.sha256(text.encode()).hexdigest()
+            
+            # Convert hash to numbers and normalize
+            embedding = []
+            for i in range(dimension):
+                # Use parts of the hash to generate pseudo-random numbers
+                hash_part = text_hash[(i * 2) % len(text_hash):(i * 2 + 2) % len(text_hash)]
+                value = int(hash_part or "00", 16) / 255.0 * 2 - 1  # Normalize to [-1, 1]
+                embedding.append(value)
+            
+            embeddings.append(embedding)
+        
+        return embeddings
             
     def close(self) -> None:
         """Close connections."""
