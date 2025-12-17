@@ -3,6 +3,41 @@ DEVELOPMENT DOCUMENTATION - Central Intelligence Email Processing MCP Server
 ===============================================================================
 
 -------------------------------------------------------------------------------
+UPDATE: Wednesday, December 17, 2025 - 10:49 PM IST
+-------------------------------------------------------------------------------
+
+## Git Push: Major Updates to Core Components
+
+### Summary
+Pushed significant enhancements to GraphConnector, query service, attachment handlers, and document extractors, along with database synchronization.
+
+### Changes Pushed
+- **data/emails.db**: Database updates (708KB -> 737KB)
+- **dev_documentation.txt**: Documentation updates (+55 lines)
+- **src/GraphConnector.py**: Major enhancements (+184 lines, significant improvements)
+- **src/attachments/attachment_handler.py**: Minor updates
+- **src/attachments/document_extractors.py**: Enhanced document extraction (+48 lines)
+- **src/rag/query_service.py**: Query service improvements (+76 lines)
+
+### Commit Details
+- **Commit Hash**: f132ca5
+- **Commit Message**: "Update: GraphConnector enhancements, query service improvements, attachment handlers, and database sync"
+- **Files Changed**: 6 files, 344 insertions(+), 22 deletions(-)
+- **Remote**: https://github.com/krishsharma1008/central_Inteligence.git
+- **Branch**: main
+
+### Key Improvements
+- GraphConnector: Substantial enhancements to graph connectivity and data processing
+- Query Service: Improved query handling and response processing
+- Document Extractors: Enhanced extraction capabilities
+- Database: Synchronized with latest email data
+
+### Verification
+- Local branch is up to date with origin/main
+- Working tree is clean
+- All changes successfully pushed to remote repository
+
+-------------------------------------------------------------------------------
 UPDATE: Wednesday, December 17, 2025 - 10:33 PM IST
 -------------------------------------------------------------------------------
 
