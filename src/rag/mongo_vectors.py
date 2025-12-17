@@ -122,3 +122,5 @@ class VectorReranker:
             logger.error(f"Error embedding query: {str(e)}")
             return None
 
+
+

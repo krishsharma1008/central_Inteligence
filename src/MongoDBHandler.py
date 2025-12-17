@@ -25,7 +25,18 @@ class MongoDBHandler:
             self.collection = self._get_or_create_collection()
             # Create index on id field
             self.collection.create_index("id", unique=True)
-            logger.info("MongoDB initialized successfully")
+
+            # Initialize attachment and chunk collections
+            self.attachments_collection = self.db[f"{collection_name}_attachments"]
+            self.attachments_collection.create_index("id", unique=True)
+            self.attachments_collection.create_index("email_id")
+
+            self.chunks_collection = self.db[f"{collection_name}_chunks"]
+            self.chunks_collection.create_index("id", unique=True)
+            self.chunks_collection.create_index([("parent_id", 1), ("chunk_number", 1)])
+            self.chunks_collection.create_index("email_id")
+
+            logger.info("MongoDB initialized successfully with attachment and chunk collections")
         except Exception as e:
             logger.error(f"Error initializing MongoDB: {str(e)}", exc_info=True)
             raise
@@ -165,7 +176,196 @@ class MongoDBHandler:
         except Exception as e:
             logger.error(f"Error getting metadata: {str(e)}")
             return None
-            
+
+    def add_attachment_with_binary(self, attachment_data: Dict[str, Any]) -> bool:
+        """
+        Store attachment with binary content and embedding in MongoDB.
+
+        Args:
+            attachment_data: Dictionary with fields:
+                - id: attachment ID
+                - email_id: parent email ID
+                - filename: filename
+                - binary_data: file bytes
+                - metadata: attachment metadata (mime_type, file_size, etc.)
+                - extracted_text: extracted text content
+                - embedding: embedding vector
+                - chunk_ids: list of chunk IDs
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            from bson.binary import Binary
+
+            doc = {
+                'id': str(attachment_data['id']),
+                'email_id': str(attachment_data['email_id']),
+                'filename': attachment_data['filename'],
+                'binary_data': Binary(attachment_data['binary_data']),
+                'metadata': attachment_data.get('metadata', {}),
+                'extracted_text': attachment_data.get('extracted_text', ''),
+                'embedding': attachment_data.get('embedding', []),
+                'chunk_ids': attachment_data.get('chunk_ids', [])
+            }
+
+            self.attachments_collection.insert_one(doc)
+            logger.info(f"Added attachment {attachment_data['filename']} to MongoDB")
+            return True
+        except DuplicateKeyError:
+            logger.warning(f"Attachment {attachment_data['id']} already exists")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding attachment: {str(e)}", exc_info=True)
+            return False
+
+    def get_attachment_binary(self, attachment_id: str) -> Optional[bytes]:
+        """
+        Retrieve attachment binary content from MongoDB.
+
+        Args:
+            attachment_id: Attachment ID
+
+        Returns:
+            Optional[bytes]: Binary content if found
+        """
+        try:
+            result = self.attachments_collection.find_one({'id': str(attachment_id)})
+            if result and 'binary_data' in result:
+                return bytes(result['binary_data'])
+            return None
+        except Exception as e:
+            logger.error(f"Error getting attachment binary: {str(e)}")
+            return None
+
+    def add_chunk_embeddings(self, chunks: List[Dict[str, Any]]) -> bool:
+        """
+        Batch insert chunk embeddings to MongoDB.
+
+        Args:
+            chunks: List of chunk dictionaries with fields:
+                - id: chunk ID
+                - parent_id: parent attachment ID
+                - email_id: root email ID
+                - chunk_number: chunk sequence number
+                - total_chunks: total number of chunks
+                - text: chunk text content
+                - embedding: embedding vector
+                - metadata: additional chunk metadata
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not chunks:
+                return True
+
+            documents = []
+            for chunk in chunks:
+                doc = {
+                    'id': str(chunk['id']),
+                    'parent_id': str(chunk['parent_id']),
+                    'email_id': str(chunk['email_id']),
+                    'chunk_number': chunk['chunk_number'],
+                    'total_chunks': chunk['total_chunks'],
+                    'text': chunk['text'],
+                    'embedding': chunk['embedding'],
+                    'metadata': chunk.get('metadata', {})
+                }
+                documents.append(doc)
+
+            self.chunks_collection.insert_many(documents)
+            logger.info(f"Added {len(documents)} chunk embeddings to MongoDB")
+            return True
+        except DuplicateKeyError:
+            logger.warning("Some chunks already exist, skipping duplicates")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding chunk embeddings: {str(e)}", exc_info=True)
+            return False
+
+    def search_chunks(self, query_embedding: List[float], top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        Vector similarity search on chunk embeddings.
+        Note: This is a simple implementation. For production, consider using MongoDB Atlas Vector Search.
+
+        Args:
+            query_embedding: Query embedding vector
+            top_k: Number of results to return
+
+        Returns:
+            List of chunks with similarity scores
+        """
+        try:
+            # Fetch all chunks (for simple implementation)
+            # In production, use MongoDB Atlas Vector Search or similar
+            chunks = list(self.chunks_collection.find({}, {'_id': 0}))
+
+            # Calculate cosine similarity
+            import numpy as np
+
+            query_vec = np.array(query_embedding)
+            query_norm = np.linalg.norm(query_vec)
+
+            results = []
+            for chunk in chunks:
+                if 'embedding' in chunk and chunk['embedding']:
+                    chunk_vec = np.array(chunk['embedding'])
+                    chunk_norm = np.linalg.norm(chunk_vec)
+
+                    if query_norm > 0 and chunk_norm > 0:
+                        similarity = np.dot(query_vec, chunk_vec) / (query_norm * chunk_norm)
+                        chunk['similarity'] = float(similarity)
+                        results.append(chunk)
+
+            # Sort by similarity and return top_k
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+            return results[:top_k]
+
+        except Exception as e:
+            logger.error(f"Error searching chunks: {str(e)}", exc_info=True)
+            return []
+
+    def get_chunks_by_parent(self, parent_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all chunks for a parent attachment.
+
+        Args:
+            parent_id: Parent attachment ID
+
+        Returns:
+            List of chunk dictionaries
+        """
+        try:
+            chunks = list(self.chunks_collection.find(
+                {'parent_id': str(parent_id)},
+                {'_id': 0}
+            ).sort('chunk_number', 1))
+            return chunks
+        except Exception as e:
+            logger.error(f"Error getting chunks by parent: {str(e)}")
+            return []
+
+    def get_attachment_metadata(self, attachment_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get attachment metadata without binary content.
+
+        Args:
+            attachment_id: Attachment ID
+
+        Returns:
+            Optional[Dict]: Attachment metadata
+        """
+        try:
+            result = self.attachments_collection.find_one(
+                {'id': str(attachment_id)},
+                {'_id': 0, 'binary_data': 0}
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Error getting attachment metadata: {str(e)}")
+            return None
+
     def close(self) -> None:
         """Close the MongoDB connection."""
         try:

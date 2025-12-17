@@ -301,3 +301,70 @@ class GraphConnector:
 
         logger.info(f"Delta sync complete: {len(all_emails)} messages total")
         return all_emails, new_delta_link
+
+    def get_message_attachments(self, message_id: str) -> list:
+        """
+        Get list of attachments for a message.
+
+        Args:
+            message_id: The message ID
+
+        Returns:
+            List of attachment dictionaries with id, name, contentType, size
+        """
+        try:
+            self.authenticate()
+            url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{message_id}/attachments"
+
+            response = requests.get(url, headers=self.headers())
+            if response.status_code != 200:
+                logger.error(f"Error getting attachments: {response.status_code} - {response.text}")
+                return []
+
+            data = response.json()
+            attachments = data.get("value", [])
+
+            attachment_list = []
+            for att in attachments:
+                attachment_list.append({
+                    'id': att.get('id'),
+                    'name': att.get('name'),
+                    'contentType': att.get('contentType'),
+                    'size': att.get('size'),
+                    'isInline': att.get('isInline', False)
+                })
+
+            logger.info(f"Found {len(attachment_list)} attachments for message {message_id}")
+            return attachment_list
+
+        except Exception as e:
+            logger.error(f"Error getting message attachments: {str(e)}", exc_info=True)
+            return []
+
+    def download_attachment(self, message_id: str, attachment_id: str) -> bytes:
+        """
+        Download attachment binary content.
+
+        Args:
+            message_id: The message ID
+            attachment_id: The attachment ID
+
+        Returns:
+            Attachment bytes or None if error
+        """
+        try:
+            self.authenticate()
+            # Use $value to get raw attachment content
+            url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{message_id}/attachments/{attachment_id}/$value"
+
+            response = requests.get(url, headers=self.headers())
+            if response.status_code != 200:
+                logger.error(f"Error downloading attachment: {response.status_code} - {response.text}")
+                return None
+
+            logger.info(f"Downloaded attachment {attachment_id} ({len(response.content)} bytes)")
+            return response.content
+
+        except Exception as e:
+            logger.error(f"Error downloading attachment: {str(e)}", exc_info=True)
+            return None

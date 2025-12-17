@@ -383,10 +383,10 @@ Conversation ID: {conv_id}
 """)
             
             for msg_num, email in enumerate(thread_emails, 1):
-                # Clean HTML from body and use larger body budget for thread context (1000 chars per message)
+                # Clean HTML from body and use larger body budget for thread context (2000 chars per message)
                 body = email.get('body', '')
                 body_cleaned = clean_html_body(body)
-                body_preview = body_cleaned[:1000] + ('...' if len(body_cleaned) > 1000 else '')
+                body_preview = body_cleaned[:2000] + ('...' if len(body_cleaned) > 2000 else '')
                 
                 context_parts.append(f"""  Message {msg_num}:
   From: {email.get('sender_name', '')} <{email.get('sender_email', '')}>
@@ -401,7 +401,7 @@ Conversation ID: {conv_id}
         for email in standalone:
             body = email.get('body', '')
             body_cleaned = clean_html_body(body)
-            body_preview = body_cleaned[:1000] + ('...' if len(body_cleaned) > 1000 else '')
+            body_preview = body_cleaned[:2000] + ('...' if len(body_cleaned) > 2000 else '')
             
             context_parts.append(f"""
 STANDALONE EMAIL {thread_num}:

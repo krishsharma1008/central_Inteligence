@@ -282,13 +282,51 @@ class EmailProcessor:
             for email in email_dicts[:total_processed]:
                 self.sqlite.mark_as_processed(email["id"])
 
+            # Process attachments if enabled
+            await self.safe_progress(ctx, 92, "Processing email attachments")
+            attachment_count = 0
+
+            if os.getenv('PROCESS_ATTACHMENTS', 'true').lower() == 'true':
+                try:
+                    from src.attachments.attachment_handler import AttachmentHandler
+
+                    attachment_handler = AttachmentHandler(
+                        self.graph,
+                        self.sqlite,
+                        self.embedding_processor.mongodb_handler,
+                        self.embedding_processor.embedding_model
+                    )
+
+                    # Process attachments for all emails
+                    for i, email in enumerate(all_emails):
+                        try:
+                            count = attachment_handler.process_email_attachments(
+                                email.Entry_ID,
+                                email.Entry_ID  # Graph message ID is same as Entry_ID
+                            )
+                            attachment_count += count
+
+                            progress = 92 + int((6 * (i + 1)) / len(all_emails))
+                            await self.safe_progress(
+                                ctx, progress, f"Processed attachments for email {i+1}/{len(all_emails)}"
+                            )
+                        except Exception as e:
+                            logging.error(f"Error processing attachments for email {email.Entry_ID}: {str(e)}")
+                            continue
+
+                    logging.info(f"Processed {attachment_count} attachments total")
+                except Exception as e:
+                    logging.error(f"Attachment processing failed: {str(e)}")
+                    # Continue even if attachment processing fails
+
             await self.safe_progress(ctx, 100, "Processing complete")
 
             return {
                 "success": True,
                 "processed_count": total_processed,
+                "attachment_count": attachment_count,
                 "message": (
-                    f"Successfully processed {total_processed} emails "
+                    f"Successfully processed {total_processed} emails and {attachment_count} attachments "
                     f"(retrieved: {len(all_emails)}, stored: {total_stored}, "
                     f"failed: {total_failed})"
                 ),

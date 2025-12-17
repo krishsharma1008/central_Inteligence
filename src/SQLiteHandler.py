@@ -125,8 +125,57 @@ class SQLiteHandler:
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         ''')
-        
-        # Create FTS5 virtual table for full-text search
+
+        # Create attachments table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS attachments (
+            id TEXT PRIMARY KEY,
+            email_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_size INTEGER,
+            mime_type TEXT,
+            storage_id TEXT,
+            extracted_text TEXT,
+            text_length INTEGER,
+            page_count INTEGER,
+            is_processed BOOLEAN DEFAULT FALSE,
+            chunk_count INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (email_id) REFERENCES emails(id)
+        )
+        ''')
+
+        # Create document chunks table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS document_chunks (
+            id TEXT PRIMARY KEY,
+            parent_id TEXT NOT NULL,
+            parent_type TEXT NOT NULL,
+            chunk_number INTEGER NOT NULL,
+            total_chunks INTEGER NOT NULL,
+            chunk_text TEXT NOT NULL,
+            token_count INTEGER,
+            has_embedding BOOLEAN DEFAULT FALSE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(parent_id, chunk_number)
+        )
+        ''')
+
+        # Create indices for attachments
+        try:
+            cursor.execute('CREATE INDEX idx_attachments_email ON attachments(email_id)')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('CREATE INDEX idx_attachments_processed ON attachments(is_processed)')
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cursor.execute('CREATE INDEX idx_chunks_parent ON document_chunks(parent_id)')
+        except sqlite3.OperationalError:
+            pass
+
+        # Create FTS5 virtual table for full-text search on emails
         cursor.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
             id UNINDEXED,
@@ -136,6 +185,17 @@ class SQLiteHandler:
             sender_email,
             recipients,
             content='emails',
+            content_rowid='rowid'
+        )
+        ''')
+
+        # Create FTS5 virtual table for attachments
+        cursor.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
+            id UNINDEXED,
+            filename,
+            extracted_text,
+            content='attachments',
             content_rowid='rowid'
         )
         ''')
@@ -163,7 +223,31 @@ class SQLiteHandler:
             VALUES (new.rowid, new.id, new.subject, new.body, new.sender_name, new.sender_email, new.recipients);
         END
         ''')
-        
+
+        # Create triggers to keep attachments FTS index in sync
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS attachments_ai AFTER INSERT ON attachments BEGIN
+            INSERT INTO attachments_fts(rowid, id, filename, extracted_text)
+            VALUES (new.rowid, new.id, new.filename, new.extracted_text);
+        END
+        ''')
+
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS attachments_ad AFTER DELETE ON attachments BEGIN
+            INSERT INTO attachments_fts(attachments_fts, rowid, id, filename, extracted_text)
+            VALUES('delete', old.rowid, old.id, old.filename, old.extracted_text);
+        END
+        ''')
+
+        cursor.execute('''
+        CREATE TRIGGER IF NOT EXISTS attachments_au AFTER UPDATE ON attachments BEGIN
+            INSERT INTO attachments_fts(attachments_fts, rowid, id, filename, extracted_text)
+            VALUES('delete', old.rowid, old.id, old.filename, old.extracted_text);
+            INSERT INTO attachments_fts(rowid, id, filename, extracted_text)
+            VALUES (new.rowid, new.id, new.filename, new.extracted_text);
+        END
+        ''')
+
         self.conn.commit()
 
     def add_or_update_email(self, email: EmailMetadata, cursor: Optional[sqlite3.Cursor] = None) -> bool:
@@ -717,20 +801,182 @@ class SQLiteHandler:
         """
         Rebuild the FTS5 index from scratch.
         Useful if the index gets out of sync.
-        
+
         Returns:
             bool: True if successful
         """
         try:
             cursor = self.conn.cursor()
             cursor.execute("INSERT INTO emails_fts(emails_fts) VALUES('rebuild')")
+            cursor.execute("INSERT INTO attachments_fts(attachments_fts) VALUES('rebuild')")
             self.conn.commit()
-            logger.info("FTS index rebuilt successfully")
+            logger.info("FTS indices rebuilt successfully")
             return True
         except Exception as e:
             logger.error(f"Error rebuilding FTS index: {str(e)}", exc_info=True)
             self.conn.rollback()
             return False
+
+    def add_attachment(self, attachment_data: Dict[str, Any]) -> bool:
+        """
+        Add an attachment record to the database.
+
+        Args:
+            attachment_data: Dictionary with attachment fields
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO attachments (
+                    id, email_id, filename, file_size, mime_type, storage_id,
+                    extracted_text, text_length, page_count, is_processed, chunk_count
+                ) VALUES (
+                    :id, :email_id, :filename, :file_size, :mime_type, :storage_id,
+                    :extracted_text, :text_length, :page_count, :is_processed, :chunk_count
+                )
+            ''', attachment_data)
+            self.conn.commit()
+            logger.info(f"Added attachment {attachment_data.get('filename')} for email {attachment_data.get('email_id')}")
+            return True
+        except Exception as e:
+            logger.error(f"Error adding attachment: {str(e)}", exc_info=True)
+            self.conn.rollback()
+            return False
+
+    def get_attachments_by_email(self, email_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all attachments for an email.
+
+        Args:
+            email_id: Email ID
+
+        Returns:
+            List of attachment dictionaries
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM attachments WHERE email_id = ?
+            ''', (email_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting attachments: {str(e)}", exc_info=True)
+            return []
+
+    def update_attachment_processing(self, attachment_id: str, extracted_text: str, chunk_count: int) -> bool:
+        """
+        Update attachment after processing.
+
+        Args:
+            attachment_id: Attachment ID
+            extracted_text: Extracted text content
+            chunk_count: Number of chunks created
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                UPDATE attachments
+                SET extracted_text = ?, text_length = ?, chunk_count = ?, is_processed = TRUE
+                WHERE id = ?
+            ''', (extracted_text, len(extracted_text), chunk_count, attachment_id))
+            self.conn.commit()
+            logger.info(f"Updated attachment {attachment_id} processing status")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating attachment: {str(e)}", exc_info=True)
+            self.conn.rollback()
+            return False
+
+    def add_chunk(self, chunk_data: Dict[str, Any]) -> bool:
+        """
+        Add a document chunk to the database.
+
+        Args:
+            chunk_data: Dictionary with chunk fields
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                INSERT INTO document_chunks (
+                    id, parent_id, parent_type, chunk_number, total_chunks,
+                    chunk_text, token_count, has_embedding
+                ) VALUES (
+                    :id, :parent_id, :parent_type, :chunk_number, :total_chunks,
+                    :chunk_text, :token_count, :has_embedding
+                )
+            ''', chunk_data)
+            self.conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Error adding chunk: {str(e)}", exc_info=True)
+            self.conn.rollback()
+            return False
+
+    def get_chunks_by_parent(self, parent_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all chunks for a parent document (attachment).
+
+        Args:
+            parent_id: Parent document ID
+
+        Returns:
+            List of chunk dictionaries
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT * FROM document_chunks
+                WHERE parent_id = ?
+                ORDER BY chunk_number ASC
+            ''', (parent_id,))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error getting chunks: {str(e)}", exc_info=True)
+            return []
+
+    def search_attachments(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        FTS5 search on attachments.
+
+        Args:
+            query: Search query
+            top_k: Maximum number of results
+
+        Returns:
+            List of attachment dictionaries with parent email info
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('''
+                SELECT
+                    a.*,
+                    e.subject as email_subject,
+                    e.sender_name as email_sender,
+                    e.received_time as email_received_time,
+                    rank
+                FROM attachments a
+                JOIN attachments_fts fts ON a.rowid = fts.rowid
+                JOIN emails e ON a.email_id = e.id
+                WHERE attachments_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+            ''', (query, top_k))
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Error searching attachments: {str(e)}", exc_info=True)
+            return []
 
     def close(self) -> None:
         """Close the database connection."""
