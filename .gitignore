@@ -45,3 +45,6 @@ chromadb
 # Node.js
 node_modules/
 package-lock.json
+
+# Windows paths (should not be in repository)
+C:/
