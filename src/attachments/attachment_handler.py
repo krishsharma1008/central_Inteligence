@@ -81,10 +81,37 @@ class AttachmentHandler:
                         logger.warning(f"Skipping large attachment {att.get('name')}: {file_size} bytes (max: {self.max_file_size})")
                         continue
 
-                    # Check if supported MIME type
-                    mime_type = att.get('contentType', '')
-                    if not DocumentExtractorFactory.is_supported(mime_type):
-                        logger.info(f"Skipping unsupported attachment type {mime_type}: {att.get('name')}")
+                    # Check if supported MIME type or file extension
+                    mime_type = att.get('contentType') or ''
+                    filename = att.get('name', '')
+                    
+                    # If no MIME type or it's None/null, try to detect by filename extension
+                    if not mime_type or mime_type == 'None' or str(mime_type).lower() == 'none':
+                        filename_lower = filename.lower()
+                        if filename_lower.endswith('.msg'):
+                            mime_type = 'application/vnd.ms-outlook'
+                        elif filename_lower.endswith('.pdf'):
+                            mime_type = 'application/pdf'
+                        elif filename_lower.endswith(('.docx', '.doc')):
+                            mime_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                        elif filename_lower.endswith(('.xlsx', '.xls')):
+                            mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                        elif filename_lower.endswith(('.pptx', '.ppt')):
+                            mime_type = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+                        elif filename_lower.endswith(('.txt', '.csv', '.html', '.xml', '.json')):
+                            mime_type = 'text/plain'
+                        else:
+                            # If no extension and MIME is None, assume it might be a .msg file (embedded email)
+                            # These are typically embedded email messages from Outlook
+                            mime_type = 'application/vnd.ms-outlook'
+                            logger.info(f"Assuming .msg format for attachment without extension: {filename}")
+                    
+                    # Update the attachment info with detected MIME type
+                    att['contentType'] = mime_type
+                    
+                    # Check if supported (by MIME type or extension)
+                    if not DocumentExtractorFactory.is_supported(mime_type, filename):
+                        logger.info(f"Skipping unsupported attachment type {mime_type}: {filename}")
                         continue
 
                     # Process the attachment
@@ -133,7 +160,7 @@ class AttachmentHandler:
                 return False
 
             # Step 2: Extract text
-            extracted = self._extract_text(binary_data, mime_type)
+            extracted = self._extract_text(binary_data, mime_type, filename)
             if 'error' in extracted:
                 logger.error(f"Text extraction failed for {filename}: {extracted['error']}")
                 # Still store the attachment but without text
@@ -216,21 +243,22 @@ class AttachmentHandler:
             logger.error(f"Error in _process_single_attachment for {filename}: {str(e)}", exc_info=True)
             return False
 
-    def _extract_text(self, binary_data: bytes, mime_type: str) -> Dict[str, Any]:
+    def _extract_text(self, binary_data: bytes, mime_type: str, filename: str = '') -> Dict[str, Any]:
         """
         Extract text from binary data using appropriate extractor.
 
         Args:
             binary_data: File content as bytes
             mime_type: MIME type of the file
+            filename: Optional filename for extension-based detection
 
         Returns:
             Dictionary with extracted text and metadata
         """
         try:
-            extractor = DocumentExtractorFactory.get_extractor(mime_type)
+            extractor = DocumentExtractorFactory.get_extractor(mime_type, filename)
             if not extractor:
-                return {'error': f'No extractor for MIME type: {mime_type}'}
+                return {'error': f'No extractor for MIME type: {mime_type}, filename: {filename}'}
 
             result = extractor.extract(binary_data)
             return result

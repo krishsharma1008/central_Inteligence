@@ -272,6 +272,123 @@ class PPTXExtractor:
             }
 
 
+class MSGExtractor:
+    """Extract text from Outlook .msg files using extract-msg."""
+
+    def extract(self, msg_bytes: bytes) -> Dict[str, Any]:
+        """
+        Extract text from .msg file.
+
+        Args:
+            msg_bytes: .msg file content as bytes
+
+        Returns:
+            Dictionary with:
+                - text: Extracted text content
+                - metadata: Email metadata (subject, sender, recipients, etc.)
+        """
+        try:
+            import extract_msg
+            from io import BytesIO
+            import tempfile
+            import os
+
+            # extract-msg requires a file path, so we need to write to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.msg') as tmp_file:
+                tmp_file.write(msg_bytes)
+                tmp_path = tmp_file.name
+
+            try:
+                # Open the .msg file
+                msg = extract_msg.Message(tmp_path)
+
+                # Extract email content
+                text_parts = []
+
+                # Email metadata
+                subject = msg.subject or ''
+                sender = msg.sender or ''
+                recipients = msg.to or ''
+                cc = msg.cc or ''
+                date = str(msg.date) if hasattr(msg, 'date') and msg.date else ''
+                body = msg.body or ''
+                html_body = msg.htmlBody or ''
+
+                # Build structured text
+                if subject:
+                    text_parts.append(f"Subject: {subject}")
+                if sender:
+                    text_parts.append(f"From: {sender}")
+                if recipients:
+                    text_parts.append(f"To: {recipients}")
+                if cc:
+                    text_parts.append(f"CC: {cc}")
+                if date:
+                    text_parts.append(f"Date: {date}")
+                
+                text_parts.append("")  # Separator
+                
+                # Use HTML body if available (usually more complete), otherwise plain text
+                if html_body:
+                    # Strip HTML tags for cleaner text
+                    try:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(html_body, 'html.parser')
+                        body_text = soup.get_text(separator='\n', strip=True)
+                        text_parts.append(body_text)
+                    except Exception:
+                        # Fallback to raw HTML if BeautifulSoup fails
+                        text_parts.append(html_body)
+                elif body:
+                    text_parts.append(body)
+
+                full_text = "\n".join(text_parts)
+
+                # Get attachments info if any
+                attachments_info = []
+                if hasattr(msg, 'attachments') and msg.attachments:
+                    for att in msg.attachments:
+                        attachments_info.append({
+                            'name': att.longFilename or att.shortFilename or 'unknown',
+                            'size': getattr(att, 'dataLength', 0)
+                        })
+
+                metadata = {
+                    'subject': subject,
+                    'sender': sender,
+                    'recipients': recipients,
+                    'cc': cc,
+                    'date': date,
+                    'has_html': bool(html_body),
+                    'attachment_count': len(attachments_info),
+                    'attachments': attachments_info
+                }
+
+                msg.close()
+
+                logger.info(f"Extracted {len(full_text)} characters from .msg file (Subject: {subject[:50]})")
+
+                return {
+                    'text': full_text,
+                    'metadata': metadata
+                }
+
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.error(f"Error extracting .msg file: {str(e)}", exc_info=True)
+            return {
+                'text': '',
+                'metadata': {},
+                'error': str(e)
+            }
+
+
 class TextExtractor:
     """Extract text from plain text files."""
 
@@ -344,6 +461,9 @@ class DocumentExtractorFactory:
         'application/vnd.ms-excel': XLSXExtractor,  # Legacy .xls
         'application/vnd.openxmlformats-officedocument.presentationml.presentation': PPTXExtractor,
         'application/vnd.ms-powerpoint': PPTXExtractor,  # Legacy .ppt
+        'application/vnd.ms-outlook': MSGExtractor,  # Outlook .msg files
+        'application/x-msg': MSGExtractor,  # Alternative MIME type for .msg
+        'message/rfc822': MSGExtractor,  # RFC 822 message format
         'text/plain': TextExtractor,
         'text/csv': TextExtractor,
         'text/html': TextExtractor,
@@ -352,35 +472,63 @@ class DocumentExtractorFactory:
     }
 
     @staticmethod
-    def get_extractor(mime_type: str) -> Optional[Any]:
+    def get_extractor(mime_type: str, filename: str = '') -> Optional[Any]:
         """
-        Get appropriate extractor for given MIME type.
+        Get appropriate extractor for given MIME type or filename.
 
         Args:
             mime_type: MIME type of the file
+            filename: Optional filename to detect type by extension
 
         Returns:
             Extractor class instance or None if not supported
         """
         extractor_class = DocumentExtractorFactory.MIME_TO_EXTRACTOR.get(mime_type)
+        
+        # If no MIME type match, try to detect by file extension
+        if not extractor_class and filename:
+            filename_lower = filename.lower()
+            if filename_lower.endswith('.msg'):
+                extractor_class = MSGExtractor
+            elif filename_lower.endswith('.pdf'):
+                extractor_class = PDFExtractor
+            elif filename_lower.endswith(('.docx', '.doc')):
+                extractor_class = DOCXExtractor
+            elif filename_lower.endswith(('.xlsx', '.xls')):
+                extractor_class = XLSXExtractor
+            elif filename_lower.endswith(('.pptx', '.ppt')):
+                extractor_class = PPTXExtractor
+            elif filename_lower.endswith(('.txt', '.csv', '.html', '.xml', '.json')):
+                extractor_class = TextExtractor
+        
         if extractor_class:
             return extractor_class()
         else:
-            logger.warning(f"No extractor found for MIME type: {mime_type}")
+            logger.warning(f"No extractor found for MIME type: {mime_type}, filename: {filename}")
             return None
 
     @staticmethod
-    def is_supported(mime_type: str) -> bool:
+    def is_supported(mime_type: str, filename: str = '') -> bool:
         """
-        Check if MIME type is supported.
+        Check if MIME type or filename extension is supported.
 
         Args:
             mime_type: MIME type to check
+            filename: Optional filename to check extension
 
         Returns:
             bool: True if supported
         """
-        return mime_type in DocumentExtractorFactory.MIME_TO_EXTRACTOR
+        if mime_type in DocumentExtractorFactory.MIME_TO_EXTRACTOR:
+            return True
+        
+        # Check by file extension if MIME type not found
+        if filename:
+            filename_lower = filename.lower()
+            if filename_lower.endswith(('.msg', '.pdf', '.docx', '.doc', '.xlsx', '.xls', '.pptx', '.ppt', '.txt', '.csv', '.html', '.xml', '.json')):
+                return True
+        
+        return False
 
     @staticmethod
     def get_supported_types() -> list:
