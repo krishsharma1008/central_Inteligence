@@ -88,7 +88,7 @@ class GraphConnector:
         select_fields = (
             "id,subject,from,receivedDateTime,body,toRecipients,"
             "conversationId,conversationIndex,internetMessageId,"
-            "inReplyTo,ccRecipients,replyTo,bodyPreview"
+            "ccRecipients,replyTo,bodyPreview"
         )
 
         url = (
@@ -201,7 +201,7 @@ class GraphConnector:
         select_fields = (
             "id,subject,from,receivedDateTime,body,toRecipients,"
             "conversationId,conversationIndex,internetMessageId,"
-            "inReplyTo,ccRecipients,replyTo,bodyPreview"
+            "ccRecipients,replyTo,bodyPreview"
         )
 
         if delta_link:

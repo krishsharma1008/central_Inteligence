@@ -666,3 +666,120 @@ Total: 28 files changed, 1592 insertions(+), 11 deletions(-)
 End of Update
 -------------------------------------------------------------------------------
 
+
+-------------------------------------------------------------------------------
+UPDATE: Wednesday, December 17, 2025 - 10:21 PM IST
+-------------------------------------------------------------------------------
+
+## Frontend Setup and Email Processing Configuration
+
+### Summary
+Set up the web application frontend on port 3050, fixed Graph API query issues, and ensured attachment processing is enabled for all emails including the latest from "parda".
+
+### Changes Implemented
+
+#### 1. Frontend Server Configuration
+- Configured Next.js frontend to run on port 3050 (port 5000 was occupied by macOS AirPlay)
+- Verified frontend is serving correctly at http://localhost:3050
+- Backend API running on http://localhost:8000
+
+#### 2. Environment Variables Setup
+- Created .env file with all required configuration:
+  - MONGODB_URI: MongoDB connection string
+  - SQLITE_DB_PATH: Path to SQLite database
+  - SARVAM_API_KEY: API key for Sarvam AI
+  - EMAIL_ADDRESS: ci@zapcg.com
+  - EMAIL_PASSWORD: App password for IMAP
+  - COLLECTION_NAME: CIZAPCOM
+  - IMAP_SERVER: outlook.office365.com
+  - IMAP_PORT: 993
+  - TENANT_ID, CLIENT_ID, CLIENT_SECRET: Microsoft Graph API credentials
+  - PROCESS_ATTACHMENTS: true (enabled attachment processing)
+
+#### 3. Graph API Query Fix (src/GraphConnector.py)
+- Removed invalid 'inReplyTo' field from Graph API select queries
+- Fixed both get_emails() and sync_all_emails() methods
+- Graph API was returning 400 error due to invalid field selection
+- Now successfully fetching emails with proper field selection
+
+#### 4. Backend API Environment Loading (src/web_api.py)
+- Added python-dotenv import and load_dotenv() call
+- Backend now automatically loads .env file on startup
+- Resolves issue where backend couldn't start due to missing environment variables
+
+#### 5. Email Processing Verification
+- Processed emails from last 30 days (2024-11-17 to 2025-12-17)
+- Found 3 existing emails in database:
+  - Fw: Notes about Hepstar (from Satamitra Ghosh Dastidar)
+  - Fw: Technical Exploratory Call (from Satamitra Ghosh Dastidar)
+  - Test email (from Shreyes Prabhu Desai)
+- No emails from "parda" found in current database
+- System is configured to process attachments when new emails arrive
+
+### Configuration Changes
+
+New Environment Variables:
+- PROCESS_ATTACHMENTS=true (added to .env)
+
+Fixed Issues:
+- Graph API query now excludes invalid 'inReplyTo' field
+- Backend API now loads .env file automatically
+- Frontend running on port 3050 (avoiding port conflicts)
+
+### Current Status
+
+Email Database:
+- 3 emails currently in database
+- All emails processed with embeddings and analysis
+- Attachment processing enabled for future emails
+- No emails from "parda" found yet
+
+System Readiness:
+- Frontend: http://localhost:3050 (running)
+- Backend: http://localhost:8000 (running)
+- SQLite: Connected (3 emails)
+- MongoDB: Connected (3 documents)
+- Attachment processing: Enabled
+- Graph API: Working correctly
+
+### Next Steps for Parda Email
+
+When the email from "parda" arrives:
+1. System will automatically process it if PROCESS_ATTACHMENTS=true
+2. Email will be stored in SQLite with all metadata
+3. Attachments will be downloaded and processed
+4. Email content and attachments will be chunked and embedded
+5. Embeddings will be stored in MongoDB for search
+6. Email will be marked as processed
+7. System will be able to answer questions based on the email and attachments
+
+To manually process new emails:
+- Run: python src/run_process.py (with updated date range)
+- Or use MCP tool: process_emails(start_date, end_date, [], None)
+
+### Files Modified
+- src/web_api.py (added dotenv loading)
+- src/GraphConnector.py (fixed Graph API query)
+- .env (created with all configuration)
+- dev_documentation.txt (this update)
+
+### Code Quality Notes
+- All changes maintain backward compatibility
+- Error handling preserved
+- Environment variable loading is automatic
+- Graph API queries now use valid field selections
+
+### Deployment Checklist
+- [x] Frontend running on port 3050
+- [x] Backend running on port 8000
+- [x] Environment variables configured
+- [x] Graph API queries fixed
+- [x] Attachment processing enabled
+- [ ] Email from "parda" to be processed when received
+- [ ] Verify attachments are processed correctly
+- [ ] Test query system with parda email content
+
+-------------------------------------------------------------------------------
+End of Update
+-------------------------------------------------------------------------------
+
