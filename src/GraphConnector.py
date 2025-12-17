@@ -305,12 +305,13 @@ class GraphConnector:
     def get_message_attachments(self, message_id: str) -> list:
         """
         Get list of attachments for a message.
+        Handles both fileAttachments and itemAttachments (embedded messages).
 
         Args:
             message_id: The message ID
 
         Returns:
-            List of attachment dictionaries with id, name, contentType, size
+            List of attachment dictionaries with id, name, contentType, size, attachmentType
         """
         try:
             self.authenticate()
@@ -326,13 +327,28 @@ class GraphConnector:
 
             attachment_list = []
             for att in attachments:
-                attachment_list.append({
+                attachment_type = att.get('@odata.type', '').split('.')[-1]  # Get type like 'fileAttachment' or 'itemAttachment'
+                
+                attachment_info = {
                     'id': att.get('id'),
                     'name': att.get('name'),
                     'contentType': att.get('contentType'),
-                    'size': att.get('size'),
-                    'isInline': att.get('isInline', False)
-                })
+                    'size': att.get('size', 0),
+                    'isInline': att.get('isInline', False),
+                    'attachmentType': attachment_type
+                }
+                
+                # For itemAttachments (embedded messages), get the item info
+                if attachment_type == 'itemAttachment':
+                    item = att.get('item', {})
+                    attachment_info['itemId'] = item.get('id')
+                    attachment_info['itemType'] = item.get('@odata.type', '').split('.')[-1]  # Usually 'message'
+                    # If contentType is None, set it based on item type
+                    if not attachment_info['contentType']:
+                        if attachment_info['itemType'] == 'message':
+                            attachment_info['contentType'] = 'application/vnd.ms-outlook'
+                
+                attachment_list.append(attachment_info)
 
             logger.info(f"Found {len(attachment_list)} attachments for message {message_id}")
             return attachment_list
@@ -341,29 +357,165 @@ class GraphConnector:
             logger.error(f"Error getting message attachments: {str(e)}", exc_info=True)
             return []
 
-    def download_attachment(self, message_id: str, attachment_id: str) -> bytes:
+    def download_attachment(self, message_id: str, attachment_id: str, attachment_type: str = None) -> bytes:
         """
         Download attachment binary content.
+        For itemAttachments (embedded messages), extracts the message content and converts to .msg-like format.
 
         Args:
             message_id: The message ID
             attachment_id: The attachment ID
+            attachment_type: Type of attachment ('fileAttachment' or 'itemAttachment')
 
         Returns:
             Attachment bytes or None if error
         """
         try:
             self.authenticate()
-            # Use $value to get raw attachment content
-            url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{message_id}/attachments/{attachment_id}/$value"
+            
+            # For itemAttachments, we need to get the embedded message and convert it
+            if attachment_type == 'itemAttachment':
+                # Get the attachment to get its name (which is usually the subject)
+                url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{message_id}/attachments/{attachment_id}"
+                response = requests.get(url, headers=self.headers())
+                
+                if response.status_code != 200:
+                    logger.error(f"Error getting itemAttachment: {response.status_code} - {response.text}")
+                    return None
+                
+                attachment_data = response.json()
+                attachment_name = attachment_data.get('name', '')
+                
+                # For itemAttachments, the name is typically the subject of the embedded message
+                # Try to find the message in the mailbox by subject (using contains for better matching)
+                # Escape single quotes in subject for OData filter
+                escaped_subject = attachment_name.replace("'", "''")
+                
+                # Try exact match first
+                search_url = (
+                    f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages?"
+                    f"$filter=subject eq '{escaped_subject}'"
+                    f"&$top=1"
+                    f"&$orderby=receivedDateTime desc"
+                )
+                
+                search_response = requests.get(search_url, headers=self.headers())
+                item = None
+                
+                if search_response.status_code == 200:
+                    search_data = search_response.json()
+                    messages = search_data.get('value', [])
+                    if messages:
+                        # Found matching message, get full details
+                        found_msg_id = messages[0].get('id')
+                        msg_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{found_msg_id}?$select=subject,from,receivedDateTime,body,bodyPreview,toRecipients,ccRecipients"
+                        msg_response = requests.get(msg_url, headers=self.headers())
+                        if msg_response.status_code == 200:
+                            item = msg_response.json()
+                            logger.info(f"Found embedded message by exact subject match: {attachment_name}")
+                
+                # If exact match failed, try contains (for forwarded emails with "Fw:" prefix variations)
+                if not item:
+                    # Remove common prefixes and try again
+                    clean_subject = attachment_name
+                    for prefix in ['FW:', 'Fw:', 'Re:', 'RE:']:
+                        if clean_subject.startswith(prefix):
+                            clean_subject = clean_subject[len(prefix):].strip()
+                            break
+                    
+                    escaped_clean = clean_subject.replace("'", "''")
+                    search_url = (
+                        f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages?"
+                        f"$filter=contains(subject, '{escaped_clean[:50]}')"  # Limit length for OData
+                        f"&$top=5"
+                        f"&$orderby=receivedDateTime desc"
+                    )
+                    
+                    search_response = requests.get(search_url, headers=self.headers())
+                    if search_response.status_code == 200:
+                        search_data = search_response.json()
+                        messages = search_data.get('value', [])
+                        # Find the best match
+                        for msg in messages:
+                            msg_subject = msg.get('subject', '')
+                            # Check if subjects are similar (ignoring case and prefixes)
+                            if (clean_subject.lower() in msg_subject.lower() or 
+                                msg_subject.lower() in clean_subject.lower()):
+                                found_msg_id = msg.get('id')
+                                msg_url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{found_msg_id}?$select=subject,from,receivedDateTime,body,bodyPreview,toRecipients,ccRecipients"
+                                msg_response = requests.get(msg_url, headers=self.headers())
+                                if msg_response.status_code == 200:
+                                    item = msg_response.json()
+                                    logger.info(f"Found embedded message by partial subject match: {attachment_name}")
+                                    break
+                
+                if not item:
+                    # If we can't find the message, create a placeholder with the attachment name
+                    logger.warning(f"Could not find embedded message for itemAttachment: {attachment_name}")
+                    # Return a formatted text with just the subject
+                    email_text = f"Subject: {attachment_name}\n\n[Embedded email message - full content not available via Graph API]"
+                    return email_text.encode('utf-8')
+                
+                # Extract message content and format as text (simulating .msg content)
+                subject = item.get('subject', '') if item else ''
+                sender = item.get('from', {}).get('emailAddress', {}) if item and item.get('from') else {}
+                sender_name = sender.get('name', '') if sender else ''
+                sender_email = sender.get('address', '') if sender else ''
+                sender_str = f"{sender_name} <{sender_email}>" if sender_name or sender_email else ''
+                
+                # Get body content (prefer HTML, fallback to plain text)
+                body_content = ''
+                if item:
+                    body_obj = item.get('body', {})
+                    if body_obj:
+                        body_content = body_obj.get('content', '')
+                    if not body_content:
+                        body_content = item.get('bodyPreview', '')
+                
+                # Strip HTML tags if present
+                if body_content and '<' in body_content:
+                    try:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(body_content, 'html.parser')
+                        body_content = soup.get_text(separator='\n', strip=True)
+                    except Exception:
+                        # If BeautifulSoup fails, use body as-is
+                        pass
+                
+                received_time = item.get('receivedDateTime', '') if item else ''
+                
+                # Get recipients
+                to_list = ''
+                cc_list = ''
+                if item:
+                    to_recipients = item.get('toRecipients', [])
+                    to_list = ', '.join([r.get('emailAddress', {}).get('address', '') for r in to_recipients if r.get('emailAddress', {}).get('address')])
+                    
+                    cc_recipients = item.get('ccRecipients', [])
+                    cc_list = ', '.join([r.get('emailAddress', {}).get('address', '') for r in cc_recipients if r.get('emailAddress', {}).get('address')])
+                
+                # Format as email text (similar to what extract-msg would produce)
+                email_text = f"""Subject: {subject}
+From: {sender_str}
+To: {to_list}
+CC: {cc_list}
+Date: {received_time}
 
-            response = requests.get(url, headers=self.headers())
-            if response.status_code != 200:
-                logger.error(f"Error downloading attachment: {response.status_code} - {response.text}")
-                return None
+{body_content}
+"""
+                
+                logger.info(f"Extracted embedded message: {subject[:50]}... ({len(email_text)} chars)")
+                return email_text.encode('utf-8')
+            else:
+                # For fileAttachments, download the binary content
+                url = f"https://graph.microsoft.com/v1.0/users/{self.user_email}/messages/{message_id}/attachments/{attachment_id}/$value"
+                response = requests.get(url, headers=self.headers())
+                if response.status_code != 200:
+                    logger.error(f"Error downloading attachment: {response.status_code} - {response.text}")
+                    return None
 
-            logger.info(f"Downloaded attachment {attachment_id} ({len(response.content)} bytes)")
-            return response.content
+                logger.info(f"Downloaded attachment {attachment_id} ({len(response.content)} bytes)")
+                return response.content
 
         except Exception as e:
             logger.error(f"Error downloading attachment: {str(e)}", exc_info=True)

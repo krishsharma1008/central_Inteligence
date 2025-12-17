@@ -273,14 +273,14 @@ class PPTXExtractor:
 
 
 class MSGExtractor:
-    """Extract text from Outlook .msg files using extract-msg."""
+    """Extract text from Outlook .msg files using extract-msg, or from embedded message text."""
 
     def extract(self, msg_bytes: bytes) -> Dict[str, Any]:
         """
-        Extract text from .msg file.
+        Extract text from .msg file or embedded message text.
 
         Args:
-            msg_bytes: .msg file content as bytes
+            msg_bytes: .msg file content as bytes, or formatted email text
 
         Returns:
             Dictionary with:
@@ -288,6 +288,48 @@ class MSGExtractor:
                 - metadata: Email metadata (subject, sender, recipients, etc.)
         """
         try:
+            # First, try to decode as UTF-8 text (for embedded messages from Graph API)
+            try:
+                text_content = msg_bytes.decode('utf-8')
+                # If it's already formatted text (from Graph API itemAttachment), use it directly
+                if text_content.startswith('Subject:') or 'From:' in text_content:
+                    logger.info("Processing embedded message text (not .msg file)")
+                    # Parse the formatted text
+                    lines = text_content.split('\n')
+                    subject = ''
+                    sender = ''
+                    date = ''
+                    body_start = 0
+                    
+                    for i, line in enumerate(lines):
+                        if line.startswith('Subject:'):
+                            subject = line.replace('Subject:', '').strip()
+                        elif line.startswith('From:'):
+                            sender = line.replace('From:', '').strip()
+                        elif line.startswith('Date:'):
+                            date = line.replace('Date:', '').strip()
+                        elif line.strip() == '' and i > 0:
+                            body_start = i + 1
+                            break
+                    
+                    body = '\n'.join(lines[body_start:]) if body_start < len(lines) else text_content
+                    
+                    metadata = {
+                        'subject': subject,
+                        'sender': sender,
+                        'date': date,
+                        'is_embedded_message': True
+                    }
+                    
+                    return {
+                        'text': text_content,
+                        'metadata': metadata
+                    }
+            except UnicodeDecodeError:
+                # Not UTF-8 text, try as .msg file
+                pass
+            
+            # Try to process as .msg file using extract-msg
             import extract_msg
             from io import BytesIO
             import tempfile

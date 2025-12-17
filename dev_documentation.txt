@@ -744,6 +744,61 @@ End of Update
 
 
 -------------------------------------------------------------------------------
+UPDATE: Wednesday, December 17, 2025 - 10:50 PM IST
+-------------------------------------------------------------------------------
+
+## .msg File Support and Attachment Processing Enhancement
+
+### Summary
+Added comprehensive support for processing .msg (Outlook message) files and embedded email attachments. The system can now extract content from .msg files, process embedded email messages from Microsoft Graph API, and include attachment content in LLM queries.
+
+### Changes Implemented
+
+#### 1. .msg File Extractor (src/attachments/document_extractors.py)
+Created MSGExtractor class:
+- Uses extract-msg library to parse Outlook .msg files
+- Extracts email metadata: subject, sender, recipients, date, body
+- Handles both HTML and plain text email bodies
+- Strips HTML tags for cleaner text extraction
+- Supports embedded messages from Graph API (itemAttachments)
+- Returns structured text format similar to email content
+
+#### 2. Document Extractor Factory Enhancement
+Updated DocumentExtractorFactory:
+- Added support for .msg MIME types: application/vnd.ms-outlook, application/x-msg, message/rfc822
+- Enhanced get_extractor() to detect file types by extension when MIME type is missing
+- Updated is_supported() to check both MIME type and file extension
+- Automatically detects .msg files even when contentType is None
+
+#### 3. Graph API ItemAttachment Support (src/GraphConnector.py)
+Enhanced attachment handling for embedded messages:
+- Detects itemAttachment type from Graph API responses
+- Attempts to find embedded messages by subject search in mailbox
+- Extracts full message content (subject, sender, body, recipients)
+- Falls back to subject-only content if message not found
+
+#### 4. Query Service Attachment Integration (src/rag/query_service.py)
+Updated to include attachment content in LLM context:
+- Added _get_email_attachments() method to fetch attachments from SQLite
+- Enhanced _build_thread_context() to include attachment content
+- Attachments are included in context sent to LLM (up to 5 per email, 500 chars each)
+- LLM can now answer questions based on attachment content
+
+### Testing Results
+- ✓ .msg files are detected and processed
+- ✓ Embedded email messages (itemAttachments) are extracted
+- ✓ Attachment content is included in query context
+- ✓ LLM can answer questions about attachment content
+- ✓ System successfully processes pardhasaradhi email with 7 attachments
+
+### Files Modified
+- src/attachments/document_extractors.py (added MSGExtractor)
+- src/GraphConnector.py (added itemAttachment support)
+- src/attachments/attachment_handler.py (enhanced type detection)
+- src/rag/query_service.py (added attachment content to context)
+- pyproject.toml (added extract-msg dependency)
+
+-------------------------------------------------------------------------------
 UPDATE: Wednesday, December 17, 2025 - 10:21 PM IST
 -------------------------------------------------------------------------------
 

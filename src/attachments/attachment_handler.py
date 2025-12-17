@@ -154,7 +154,8 @@ class AttachmentHandler:
             logger.info(f"Processing attachment: {filename} ({mime_type})")
 
             # Step 1: Download binary content
-            binary_data = self.graph.download_attachment(message_id, attachment_info['id'])
+            attachment_type = attachment_info.get('attachmentType', 'fileAttachment')
+            binary_data = self.graph.download_attachment(message_id, attachment_info['id'], attachment_type)
             if not binary_data:
                 logger.error(f"Failed to download attachment: {filename}")
                 return False

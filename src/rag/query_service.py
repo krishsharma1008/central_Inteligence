@@ -392,8 +392,21 @@ Conversation ID: {conv_id}
   From: {email.get('sender_name', '')} <{email.get('sender_email', '')}>
   Date: {email.get('received_time', '')}
   Body: {body_preview}
-  
 """)
+                
+                # Add attachment content if available
+                email_id = email.get('id')
+                if email_id:
+                    attachments = self._get_email_attachments(email_id)
+                    if attachments:
+                        context_parts.append("  Attachments:")
+                        for att in attachments[:5]:  # Limit to 5 attachments per email
+                            att_text = att.get('extracted_text', '') or att.get('text', '')
+                            if att_text:
+                                att_preview = att_text[:500] + ('...' if len(att_text) > 500 else '')
+                                context_parts.append(f"    - {att.get('filename', 'unknown')}: {att_preview}")
+                
+                context_parts.append("")
             
             thread_num += 1
         
@@ -409,11 +422,70 @@ Subject: {email.get('subject', 'No Subject')}
 From: {email.get('sender_name', '')} <{email.get('sender_email', '')}>
 Date: {email.get('received_time', '')}
 Body: {body_preview}
-
 """)
+            
+            # Add attachment content if available
+            email_id = email.get('id')
+            if email_id:
+                attachments = self._get_email_attachments(email_id)
+                if attachments:
+                    context_parts.append("Attachments:")
+                    for att in attachments[:5]:  # Limit to 5 attachments per email
+                        att_text = att.get('extracted_text', '') or att.get('text', '')
+                        if att_text:
+                            att_preview = att_text[:500] + ('...' if len(att_text) > 500 else '')
+                            context_parts.append(f"  - {att.get('filename', 'unknown')}: {att_preview}")
+            
+            context_parts.append("")
             thread_num += 1
         
         return "\n".join(context_parts)
+    
+    def _get_email_attachments(self, email_id: str) -> List[Dict[str, Any]]:
+        """
+        Get attachments for an email from SQLite.
+        
+        Args:
+            email_id: Email ID
+            
+        Returns:
+            List of attachment dictionaries
+        """
+        try:
+            # Import here to avoid circular dependencies
+            from src.SQLiteHandler import SQLiteHandler
+            import os
+            from dotenv import load_dotenv
+            load_dotenv()
+            
+            db_path = os.getenv('SQLITE_DB_PATH')
+            handler = SQLiteHandler(db_path)
+            
+            cursor = handler.conn.cursor()
+            cursor.execute('''
+                SELECT filename, extracted_text, mime_type, text_length
+                FROM attachments
+                WHERE email_id = ? AND extracted_text IS NOT NULL AND extracted_text != ''
+                ORDER BY text_length DESC
+                LIMIT 10
+            ''', (email_id,))
+            
+            results = cursor.fetchall()
+            attachments = []
+            for row in results:
+                attachments.append({
+                    'filename': row[0],
+                    'extracted_text': row[1],
+                    'text': row[1],  # Alias for compatibility
+                    'mime_type': row[2],
+                    'text_length': row[3]
+                })
+            
+            handler.close()
+            return attachments
+        except Exception as e:
+            logger.error(f"Error getting attachments for email {email_id}: {str(e)}")
+            return []
     
     def _build_prompt(self, question: str, context: str) -> str:
         """
