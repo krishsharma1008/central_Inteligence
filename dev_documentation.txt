@@ -3,8 +3,30 @@ DEVELOPMENT DOCUMENTATION - Central Intelligence Email Processing MCP Server
 ===============================================================================
 
 -------------------------------------------------------------------------------
-UPDATE: Wednesday, December 17, 2025 - 10:24 PM IST
+UPDATE: Wednesday, December 17, 2025 - 10:28 PM IST
 -------------------------------------------------------------------------------
+
+## Repository Cleanup: Remove C:/ Folder
+
+### Summary
+Removed the accidentally tracked Windows path folder (`C:/`) from the git repository and added it to `.gitignore` to prevent future tracking.
+
+### Changes Made
+- **Removed from git**: `C:/Users/ShreyesPrabhuDesai/PersProjects/central_Inteligence/data/emails.db`
+- **Updated .gitignore**: Added `C:/` pattern to prevent Windows paths from being tracked
+- **Commit Hash**: 35c0d22
+- **Commit Message**: "Remove C:/ folder from repository and add to .gitignore"
+
+### Rationale
+Windows absolute paths should not be tracked in git repositories as they are:
+- Machine-specific and not portable
+- Can cause issues when cloning on different operating systems
+- Not relevant to the project structure
+
+### Verification
+- No C:/ files remain in git tracking
+- .gitignore updated to prevent future additions
+- Changes successfully pushed to origin/main
 
 ## Git Push Operation
 
