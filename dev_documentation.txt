@@ -596,6 +596,73 @@ No new environment variables required. Filtering is automatic and uses the same 
 - Keyword extraction is case-insensitive and robust
 
 -------------------------------------------------------------------------------
+UPDATE: Wednesday, December 17, 2025 - 10:04 PM IST
+-------------------------------------------------------------------------------
+
+## Git Force Push to Main Branch
+
+### Summary
+Performed force push to main branch to reject incoming remote changes and overwrite remote repository with local state. All local changes were committed and pushed, overwriting 2 remote commits ("commit" and "env").
+
+### Changes Implemented
+
+#### 1. Local Changes Committed
+Committed all uncommitted local changes before force push:
+- Modified: data/emails.db, pyproject.toml
+- Modified: src/GraphConnector.py, src/MongoDBHandler.py, src/SQLiteHandler.py
+- Modified: src/SarvamClient.py, src/mcp_server.py
+- Modified: src/rag/__init__.py, src/rag/mongo_vectors.py, src/rag/query_service.py
+- Modified: src/web_api.py
+- Modified: tests/__init__.py, tests/test_fts_search.py, tests/test_query_service.py
+- Modified: tests/test_thread_rag.py, tests/test_vector_rerank.py
+- Modified: web/.gitignore, web/app/email/[id]/page.tsx, web/app/globals.css
+- Modified: web/app/page.tsx, web/next.config.js, web/package.json, web/tsconfig.json
+- Added: C:/Users/ShreyesPrabhuDesai/PersProjects/central_Inteligence/data/emails.db
+- Added: src/attachments/__init__.py, src/attachments/attachment_handler.py
+- Added: src/attachments/chunking.py, src/attachments/document_extractors.py
+
+Total: 28 files changed, 1592 insertions(+), 11 deletions(-)
+
+#### 2. Force Push Operation
+- Fetched latest from origin/main to identify incoming changes
+- Identified 2 incoming commits on remote:
+  - c47f79f: "commit"
+  - 9fcd829: "env"
+- Force pushed local main branch to origin/main
+- Remote commits were rejected and overwritten
+- Local commit: 1dae803 "Update: Local changes - rejecting incoming remote changes"
+
+### Git Operations Performed
+
+1. `git status` - Checked current branch and uncommitted changes
+2. `git fetch origin` - Fetched latest remote state
+3. `git log HEAD..origin/main` - Identified incoming commits
+4. `git add -A` - Staged all changes
+5. `git commit -m "Update: Local changes - rejecting incoming remote changes"` - Committed local changes
+6. `git push --force origin main` - Force pushed to overwrite remote
+
+### Result
+- Remote main branch successfully overwritten with local state
+- Incoming changes (commits c47f79f and 9fcd829) rejected as requested
+- Local repository is now in sync with remote (local ahead)
+- All local changes are now on remote main branch
+
+### Notes
+- Force push is a destructive operation that overwrites remote history
+- All team members should be aware of this change
+- If other team members have pulled the rejected commits, they will need to reset their local branches
+- Future pulls may require `git pull --rebase` or `git reset --hard origin/main` for affected team members
+
+### Files Affected
+- All modified files in working directory (28 files)
+- Remote main branch history
+
+### Code Quality Notes
+- Force push was performed as explicitly requested by user
+- All local changes were properly committed before push
+- Git history shows clean force update: + c47f79f...1dae803 main -> main (forced update)
+
+-------------------------------------------------------------------------------
 End of Update
 -------------------------------------------------------------------------------
 
