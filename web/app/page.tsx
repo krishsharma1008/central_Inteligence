@@ -1,203 +1,303 @@
-'use client'
+import Link from 'next/link'
 
-import { useState } from 'react'
+const kpis = [
+  {
+    label: 'Engagement change',
+    value: '-80%',
+    detail: 'Jan-Jun',
+    tone: 'down',
+    note: 'Account engagement',
+  },
+  {
+    label: 'iOS rating',
+    value: '4.4',
+    detail: 'App Store',
+    tone: 'up',
+    note: 'Stabilized after handover',
+  },
+  {
+    label: 'Android rating',
+    value: '<2.0',
+    detail: 'Play Store',
+    tone: 'critical',
+    note: 'Below target',
+  },
+  {
+    label: 'Productivity gains',
+    value: '+35%',
+    detail: 'Pilot results',
+    tone: 'up',
+    note: 'Copilot and Windsurf',
+  },
+  {
+    label: 'GTM runway',
+    value: '7-8 mo',
+    detail: 'Hospitality + airline',
+    tone: 'neutral',
+    note: 'Joint GTM effort',
+  },
+  {
+    label: 'Ownership shift',
+    value: 'Post-Feb',
+    detail: 'In-house',
+    tone: 'neutral',
+    note: 'Support scaled down',
+  },
+]
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const ratingBars = [
+  {
+    label: 'iOS rating',
+    value: '4.4 / 5',
+    width: '88%',
+    tone: 'up',
+    note: 'Improving after stabilization',
+  },
+  {
+    label: 'Android rating',
+    value: '<2.0 / 5',
+    width: '35%',
+    tone: 'critical',
+    note: 'Workstream still in progress',
+  },
+]
 
-interface Citation {
-  id: string
-  subject: string
-  sender: string
-  sender_email: string
-  received_time: string
-  snippet: string
-}
+const signals = [
+  { label: 'Customer confidence', value: 'Lowered', tone: 'down' },
+  { label: 'Stabilization', value: 'In progress', tone: 'neutral' },
+  { label: 'iOS health', value: 'Improving', tone: 'up' },
+  { label: 'Android health', value: 'Critical', tone: 'critical' },
+]
 
-interface QueryResponse {
-  success: boolean
-  answer: string
-  citations: Citation[]
-  retrieved_emails: any[]
-}
+const risks = [
+  'High penalties tied to app quality issues',
+  'Code quality concerns in key modules (Gym Check-ins)',
+  'Android rating remains below 2',
+  'Customer confidence impacted by build quality',
+]
+
+const actions = [
+  'Dedicated FTE stabilization workstream in place',
+  'War room support continued through February',
+  'Review prompt strategy to lift positive feedback',
+  'Categorize reviews into workflow vs bug issues',
+]
+
+const opportunities = [
+  'US and Asia implementation opportunities',
+  'Hospitality and airline GTM alignment',
+  'KSA region support and local leadership',
+  'Independent implementation partner role',
+]
+
+const timeline = [
+  {
+    date: 'Jan 2025',
+    title: 'Joint go-live with shared QA signoffs',
+    detail: 'Capillary + Zapcom delivery model',
+  },
+  {
+    date: 'Feb 2025',
+    title: 'Ownership fully moved in-house',
+    detail: 'Zapcom support scaled down',
+  },
+  {
+    date: 'Jun 22, 2025',
+    title: 'Engagement flagged as down 80%',
+    detail: 'Request for strategic partnership review',
+  },
+  {
+    date: 'Jun 26, 2025',
+    title: 'Capillary feedback on penalties and ratings',
+    detail: 'iOS 4.4, Android below 2',
+  },
+  {
+    date: 'Jul 3, 2025',
+    title: 'Follow-up with remediation suggestions',
+    detail: 'Review prompts and app insights',
+  },
+]
 
 export default function Home() {
-  const [question, setQuestion] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [response, setResponse] = useState<QueryResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    
-    if (!question.trim()) {
-      return
-    }
-
-    setLoading(true)
-    setError(null)
-    setResponse(null)
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/query`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          question: question.trim(),
-          top_k: 8,
-        }),
-      })
-
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`)
-      }
-
-      const data: QueryResponse = await res.json()
-      setResponse(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred')
-    } finally {
-      setLoading(false)
-    }
-  }
-
   return (
-    <main style={{ maxWidth: '1200px', margin: '0 auto', padding: '40px 20px' }}>
-      <header style={{ marginBottom: '40px', textAlign: 'center' }}>
-        <h1 style={{ fontSize: '32px', marginBottom: '10px', color: '#111' }}>
-          Email RAG Search
-        </h1>
-        <p style={{ color: '#666', fontSize: '16px' }}>
-          Ask questions about your company emails
-        </p>
-      </header>
+    <main className="dashboard">
+      <div className="dashboard-bg">
+        <div className="orb orb-a" />
+        <div className="orb orb-b" />
+        <div className="orb orb-c" />
+        <div className="grid-overlay" />
+      </div>
 
-      <form onSubmit={handleSubmit} style={{ marginBottom: '40px' }}>
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <input
-            type="text"
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ask a question about your emails..."
-            style={{
-              flex: 1,
-              padding: '15px 20px',
-              fontSize: '16px',
-              border: '1px solid #ddd',
-              borderRadius: '8px',
-              outline: 'none',
-            }}
-            disabled={loading}
-          />
-          <button
-            type="submit"
-            disabled={loading || !question.trim()}
-            style={{
-              padding: '15px 30px',
-              fontSize: '16px',
-              fontWeight: '600',
-              backgroundColor: loading ? '#ccc' : '#0070f3',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: loading ? 'not-allowed' : 'pointer',
-            }}
-          >
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </div>
-      </form>
-
-      {error && (
-        <div
-          style={{
-            padding: '20px',
-            backgroundColor: '#fee',
-            border: '1px solid #fcc',
-            borderRadius: '8px',
-            marginBottom: '20px',
-            color: '#c33',
-          }}
-        >
-          <strong>Error:</strong> {error}
-        </div>
-      )}
-
-      {response && (
-        <div>
-          <div
-            style={{
-              padding: '30px',
-              backgroundColor: 'white',
-              borderRadius: '12px',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-              marginBottom: '30px',
-            }}
-          >
-            <h2 style={{ fontSize: '20px', marginBottom: '15px', color: '#111' }}>
-              Answer
-            </h2>
-            <p style={{ lineHeight: '1.6', color: '#333', whiteSpace: 'pre-wrap' }}>
-              {response.answer}
-            </p>
+      <div className="dashboard-content">
+        <nav className="nav">
+          <div className="nav-title">Dashboard views</div>
+          <div className="nav-links">
+            <Link className="nav-link active" href="/">
+              Capillary relationship
+            </Link>
+            <Link className="nav-link" href="/csat-response">
+              CSAT response
+            </Link>
           </div>
+        </nav>
 
-          {response.citations && response.citations.length > 0 && (
-            <div>
-              <h2 style={{ fontSize: '20px', marginBottom: '20px', color: '#111' }}>
-                Sources ({response.citations.length})
-              </h2>
-              <div style={{ display: 'grid', gap: '15px' }}>
-                {response.citations.map((citation, index) => (
-                  <a
-                    key={citation.id || index}
-                    href={`/email/${encodeURIComponent(citation.id)}`}
-                    style={{
-                      display: 'block',
-                      padding: '20px',
-                      backgroundColor: 'white',
-                      borderRadius: '8px',
-                      boxShadow: '0 1px 4px rgba(0,0,0,0.1)',
-                      textDecoration: 'none',
-                      color: 'inherit',
-                      transition: 'box-shadow 0.2s',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)'
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.1)'
-                    }}
-                  >
-                    <div style={{ marginBottom: '10px' }}>
-                      <strong style={{ fontSize: '16px', color: '#111' }}>
-                        {citation.subject || 'No Subject'}
-                      </strong>
-                    </div>
-                    <div style={{ fontSize: '14px', color: '#666', marginBottom: '8px' }}>
-                      <span>From: {citation.sender || citation.sender_email}</span>
-                      {citation.received_time && (
-                        <span style={{ marginLeft: '15px' }}>
-                          Date: {new Date(citation.received_time).toLocaleDateString()}
-                        </span>
-                      )}
-                    </div>
-                    {citation.snippet && (
-                      <p style={{ fontSize: '14px', color: '#888', marginTop: '10px' }}>
-                        {citation.snippet}
-                      </p>
-                    )}
-                  </a>
-                ))}
+        <header className="hero">
+          <div className="hero-text fade-in">
+            <span className="eyebrow">CSP customer satisfaction</span>
+            <h1>Capillary relationship health dashboard</h1>
+            <p className="hero-subtitle">
+              Snapshot of customer satisfaction and project health derived from
+              the Capillary relationship email thread.
+            </p>
+            <div className="pill-row">
+              <span className="pill">US + Asia opportunity</span>
+              <span className="pill">Optum app focus</span>
+              <span className="pill">Hospitality + airline GTM</span>
+            </div>
+          </div>
+          <div className="card hero-card fade-in" style={{ animationDelay: '0.1s' }}>
+            <div className="hero-card-header">Customer satisfaction snapshot</div>
+            <div className="hero-metrics">
+              <div>
+                <div className="hero-metric-value">4.4</div>
+                <div className="hero-metric-label">iOS rating</div>
+              </div>
+              <div>
+                <div className="hero-metric-value">&lt;2.0</div>
+                <div className="hero-metric-label">Android rating</div>
+              </div>
+              <div>
+                <div className="hero-metric-value">-80%</div>
+                <div className="hero-metric-label">Engagement</div>
               </div>
             </div>
-          )}
-        </div>
-      )}
+            <p className="hero-note">
+              Confidence has been lowered by quality issues, while stabilization
+              efforts are underway.
+            </p>
+          </div>
+        </header>
+
+        <section className="kpi-grid">
+          {kpis.map((kpi, index) => (
+            <div
+              key={kpi.label}
+              className={`kpi-card tone-${kpi.tone} fade-in`}
+              style={{ animationDelay: `${0.15 + index * 0.05}s` }}
+            >
+              <div className="kpi-label">{kpi.label}</div>
+              <div className="kpi-value">{kpi.value}</div>
+              <div className="kpi-detail">{kpi.detail}</div>
+              <div className="kpi-note">{kpi.note}</div>
+            </div>
+          ))}
+        </section>
+
+        <section className="grid-two">
+          <div className="card fade-in" style={{ animationDelay: '0.2s' }}>
+            <div className="section-title">App store health</div>
+            <div className="rating-list">
+              {ratingBars.map((rating) => (
+                <div key={rating.label} className="rating-item">
+                  <div className="rating-header">
+                    <span>{rating.label}</span>
+                    <span className={`rating-value tone-${rating.tone}`}>
+                      {rating.value}
+                    </span>
+                  </div>
+                  <div className="rating-track">
+                    <div
+                      className={`rating-fill tone-${rating.tone}`}
+                      style={{ width: rating.width }}
+                    />
+                  </div>
+                  <div className="rating-note">{rating.note}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card fade-in" style={{ animationDelay: '0.25s' }}>
+            <div className="section-title">Engagement momentum</div>
+            <div className="sparkline">
+              <svg viewBox="0 0 260 90" role="img" aria-label="Engagement trend">
+                <defs>
+                  <linearGradient id="sparkGradient" x1="0" y1="0" x2="1" y2="0">
+                    <stop offset="0%" stopColor="#f4a259" />
+                    <stop offset="100%" stopColor="#e56b6f" />
+                  </linearGradient>
+                </defs>
+                <path
+                  d="M10 20 L60 30 L110 55 L160 60 L210 72 L250 82"
+                  fill="none"
+                  stroke="url(#sparkGradient)"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                />
+                <circle cx="10" cy="20" r="4" fill="#f4a259" />
+                <circle cx="250" cy="82" r="4" fill="#e56b6f" />
+              </svg>
+              <div className="sparkline-caption">
+                Engagement dropped 80% from Jan to Jun, signaling urgent recovery
+                work.
+              </div>
+            </div>
+            <div className="signal-grid">
+              {signals.map((signal) => (
+                <div key={signal.label} className={`signal tone-${signal.tone}`}>
+                  <span className="signal-label">{signal.label}</span>
+                  <span className="signal-value">{signal.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <section className="grid-three">
+          <div className="card fade-in" style={{ animationDelay: '0.3s' }}>
+            <div className="section-title">Top risks</div>
+            <ul className="list">
+              {risks.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="card fade-in" style={{ animationDelay: '0.35s' }}>
+            <div className="section-title">Actions in motion</div>
+            <ul className="list">
+              {actions.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="card fade-in" style={{ animationDelay: '0.4s' }}>
+            <div className="section-title">Opportunity signals</div>
+            <ul className="list">
+              {opportunities.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="card timeline fade-in" style={{ animationDelay: '0.45s' }}>
+          <div className="section-title">Key moments</div>
+          <div className="timeline-list">
+            {timeline.map((event) => (
+              <div key={event.date} className="timeline-item">
+                <div className="timeline-date">{event.date}</div>
+                <div>
+                  <div className="timeline-title">{event.title}</div>
+                  <div className="timeline-detail">{event.detail}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <footer className="footer">
+          Source: Capillary relationship email thread (June-July 2025)
+        </footer>
+      </div>
     </main>
   )
 }
-
-
-
