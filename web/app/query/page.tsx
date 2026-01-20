@@ -96,6 +96,9 @@ export default function QueryPage() {
             <Link className="nav-link active" href="/query">
               Ask emails
             </Link>
+            <Link className="nav-link" href="/graph">
+              Context Graph
+            </Link>
           </div>
         </nav>
 

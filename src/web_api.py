@@ -60,12 +60,14 @@ class QueryResponse(BaseModel):
 query_service: Optional[QueryService] = None
 sqlite_handler: Optional[SQLiteHandler] = None
 mongodb_handler: Optional[MongoDBHandler] = None
+graph_store = None
+context_compiler = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    global query_service, sqlite_handler, mongodb_handler
+    global query_service, sqlite_handler, mongodb_handler, graph_store, context_compiler
     
     logger.info("Initializing services...")
     
@@ -82,6 +84,19 @@ async def startup_event():
     # Initialize handlers
     sqlite_handler = SQLiteHandler(sqlite_db_path)
     mongodb_handler = MongoDBHandler(mongodb_uri, collection_name)
+    
+    # Initialize graph store and context compiler
+    from src.context_graph.store_sqlite import GraphStoreSQLite
+    from src.context_graph.compiler import ContextCompiler
+    graph_store = GraphStoreSQLite(sqlite_db_path)
+    context_compiler = ContextCompiler(
+        graph_store=graph_store,
+        recency_half_life_days=7.0,
+        max_nodes=50,
+        max_edges=100,
+        max_tokens=8000
+    )
+    logger.info("Graph store and context compiler initialized")
     
     # Initialize Sarvam client
     sarvam_client = SarvamClient(api_key=sarvam_api_key)
@@ -312,6 +327,213 @@ async def health_check():
         health_status["status"] = "degraded"
     
     return health_status
+
+
+# Graph API endpoints
+class CompileRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = 8
+    tenant_id: Optional[str] = "default"
+    debug: Optional[bool] = False
+
+
+@app.post("/graph/compile")
+async def compile_context(request: CompileRequest):
+    """
+    Compile a context packet using the graph compiler.
+    
+    Args:
+        request: Compile request with question and parameters
+        
+    Returns:
+        Context packet with nodes, edges, scores, and trace
+    """
+    if not context_compiler or not query_service:
+        raise HTTPException(status_code=500, detail="Graph compiler not initialized")
+    
+    try:
+        logger.info(f"Compiling context for: {request.question}")
+        
+        # Step 1: Get seed nodes from FTS search
+        fts_results = query_service.searcher.search(request.question, top_k=request.top_k * 2)
+        
+        # Extract conversation IDs as seed nodes
+        seed_node_ids = []
+        seen_convs = set()
+        for email in fts_results:
+            conv_id = email.get('conversation_id')
+            if conv_id and conv_id not in seen_convs:
+                seed_node_ids.append(f"conv_{conv_id}")
+                seen_convs.add(conv_id)
+        
+        if not seed_node_ids:
+            return {
+                "success": False,
+                "message": "No seed nodes found",
+                "packet": None
+            }
+        
+        # Step 2: Compile context packet
+        packet = context_compiler.compile(
+            intent_text=request.question,
+            seed_node_ids=seed_node_ids[:request.top_k],
+            tenant_id=request.tenant_id,
+            debug=request.debug
+        )
+        
+        return {
+            "success": True,
+            "packet": packet.to_dict()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error compiling context: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error compiling context: {str(e)}")
+
+
+@app.get("/graph/nodes/{node_id}")
+async def get_node(node_id: str):
+    """
+    Get a node by ID with its neighbors.
+    
+    Args:
+        node_id: Node ID
+        
+    Returns:
+        Node with connected edges and neighbors
+    """
+    if not graph_store:
+        raise HTTPException(status_code=500, detail="Graph store not initialized")
+    
+    try:
+        node = graph_store.get_node(node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        
+        edges = graph_store.get_edges_for_node(node_id)
+        
+        # Get neighbor nodes
+        neighbor_ids = set()
+        for edge in edges:
+            if edge.src == node_id:
+                neighbor_ids.add(edge.dst)
+            else:
+                neighbor_ids.add(edge.src)
+        
+        neighbors = []
+        for neighbor_id in neighbor_ids:
+            neighbor = graph_store.get_node(neighbor_id)
+            if neighbor:
+                neighbors.append(neighbor.to_dict())
+        
+        return {
+            "node": node.to_dict(),
+            "edges": [e.to_dict() for e in edges],
+            "neighbors": neighbors
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting node: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting node: {str(e)}")
+
+
+@app.get("/graph/trace/{request_id}")
+async def get_compile_trace(request_id: str):
+    """
+    Get the compile trace for a request.
+    
+    Args:
+        request_id: Request ID
+        
+    Returns:
+        Compile trace with steps and statistics
+    """
+    if not graph_store:
+        raise HTTPException(status_code=500, detail="Graph store not initialized")
+    
+    try:
+        packet = graph_store.get_context_packet(request_id)
+        if not packet:
+            raise HTTPException(status_code=404, detail="Trace not found")
+        
+        return {
+            "request_id": request_id,
+            "trace": packet['trace']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting trace: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting trace: {str(e)}")
+
+
+@app.get("/graph/metrics")
+async def get_graph_metrics(tenant_id: Optional[str] = None):
+    """
+    Get graph statistics and metrics.
+    
+    Args:
+        tenant_id: Optional tenant filter
+        
+    Returns:
+        Graph statistics
+    """
+    if not graph_store:
+        raise HTTPException(status_code=500, detail="Graph store not initialized")
+    
+    try:
+        stats = graph_store.get_graph_stats(tenant_id)
+        return {
+            "success": True,
+            "stats": stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting metrics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting metrics: {str(e)}")
+
+
+class BackfillRequest(BaseModel):
+    tenant_id: str = "default"
+    limit: Optional[int] = None
+
+
+@app.post("/graph/rebuild")
+async def rebuild_graph(request: BackfillRequest):
+    """
+    Rebuild the graph from email/attachment data.
+    
+    Args:
+        request: Backfill request with tenant_id and optional limit
+        
+    Returns:
+        Statistics on created nodes/edges
+    """
+    if not graph_store or not sqlite_handler:
+        raise HTTPException(status_code=500, detail="Services not initialized")
+    
+    try:
+        from src.context_graph.ingestion import GraphIngestion
+        
+        logger.info(f"Starting graph rebuild for tenant {request.tenant_id}")
+        
+        ingestion = GraphIngestion(sqlite_handler, graph_store)
+        stats = ingestion.backfill_all(
+            tenant_id=request.tenant_id,
+            limit=request.limit
+        )
+        
+        return {
+            "success": True,
+            "stats": stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Error rebuilding graph: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error rebuilding graph: {str(e)}")
 
 
 if __name__ == "__main__":

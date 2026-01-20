@@ -158,6 +158,9 @@ export default function CsatResponsePage() {
             <Link className="nav-link" href="/query">
               Ask emails
             </Link>
+            <Link className="nav-link" href="/graph">
+              Context Graph
+            </Link>
           </div>
         </nav>
 
