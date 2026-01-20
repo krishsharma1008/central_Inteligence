@@ -155,6 +155,9 @@ export default function CsatResponsePage() {
             <Link className="nav-link active" href="/csat-response">
               CSAT response
             </Link>
+            <Link className="nav-link" href="/query">
+              Ask emails
+            </Link>
           </div>
         </nav>
 

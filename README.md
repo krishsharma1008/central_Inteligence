@@ -345,6 +345,22 @@ uv pip install -e .
 python src/web_api.py
 ```
 
+#### One-command cross-platform setup
+
+Use the helper script to create/activate `.venv`, install dependencies (including `fastmcp`), and launch the FastAPI server:
+
+```bash
+python scripts/run_backend.py
+```
+
+Options:
+
+- `--skip-installs` – reuse the existing environment without running pip.
+- `-- <args>` – forward extra arguments to `src/web_api.py` (e.g., `-- --port 9000`).
+- `--env-file <path>` – explicit `.env` file; otherwise the script loads `.env.local` then `.env` from repo root.
+
+Copy `.env.example` to `.env` (or `.env.local`) and fill in your credentials so both the helper script and FastAPI app can read them automatically.
+
 The API will start on `http://localhost:8000` by default. You can change the port with `API_PORT` environment variable.
 
 #### API Endpoints
@@ -380,6 +396,12 @@ npm run dev
 ```
 
 The web UI will be available at `http://localhost:3000`.
+
+#### Available Views
+
+- `/` – Capillary relationship dashboard
+- `/csat-response` – Detailed CSAT response dashboard
+- `/query` – **Ask Emails** view that lets you submit a natural-language question, sends it to the FastAPI `/query` endpoint, and shows the answer/citations/retrieved emails.
 
 ### Using the Email Search
 

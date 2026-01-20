@@ -138,6 +138,9 @@ export default function Home() {
             <Link className="nav-link" href="/csat-response">
               CSAT response
             </Link>
+            <Link className="nav-link" href="/query">
+              Ask emails
+            </Link>
           </div>
         </nav>
 
