@@ -15,6 +15,7 @@ from .models import (
     NodeScore, CompileTrace, GraphLayer
 )
 from .store_sqlite import GraphStoreSQLite
+from .vector_scorer import VectorScorer
 
 logger = logging.getLogger('outlook-email.context_graph.compiler')
 
@@ -28,6 +29,7 @@ class ContextCompiler:
     def __init__(
         self,
         graph_store: GraphStoreSQLite,
+        vector_scorer: Optional[VectorScorer] = None,
         recency_half_life_days: float = 7.0,
         max_nodes: int = 50,
         max_edges: int = 100,
@@ -38,12 +40,14 @@ class ContextCompiler:
         
         Args:
             graph_store: Graph storage backend
+            vector_scorer: Optional vector scorer for semantic similarity
             recency_half_life_days: Half-life for recency decay (exponential)
             max_nodes: Maximum nodes in compiled context
             max_edges: Maximum edges in compiled context
             max_tokens: Estimated token budget for context
         """
         self.graph_store = graph_store
+        self.vector_scorer = vector_scorer
         self.recency_half_life_days = recency_half_life_days
         self.max_nodes = max_nodes
         self.max_edges = max_edges
@@ -90,11 +94,22 @@ class ContextCompiler:
         )
         self.graph_store.add_node(intent_node)
         
-        # Step 2: Gather candidate nodes via graph traversal
+        # Step 2: Gather candidate nodes via graph traversal (with optional vector guidance)
         logger.info(f"Gathering candidates from {len(seed_node_ids)} seed nodes")
-        candidates = self._gather_candidates(seed_node_ids, tenant_id, trace)
+        query_embedding = None
+        if self.vector_scorer:
+            query_embedding = self.vector_scorer.embed_query(intent_text)
+            if query_embedding:
+                logger.info("Using vector-guided graph traversal")
+                candidates = self._gather_candidates_with_vectors(seed_node_ids, query_embedding, tenant_id, trace)
+            else:
+                logger.info("Falling back to standard graph traversal")
+                candidates = self._gather_candidates(seed_node_ids, tenant_id, trace)
+        else:
+            candidates = self._gather_candidates(seed_node_ids, tenant_id, trace)
+        
         trace.candidate_count = len(candidates)
-        trace.add_step('gather_candidates', {'count': len(candidates)})
+        trace.add_step('gather_candidates', {'count': len(candidates), 'vector_guided': query_embedding is not None})
         
         if not candidates:
             logger.warning("No candidates found")
@@ -110,9 +125,9 @@ class ContextCompiler:
                 trace=trace
             )
         
-        # Step 3: Score all candidate nodes
+        # Step 3: Score all candidate nodes (with optional vector similarity)
         logger.info(f"Scoring {len(candidates)} candidates")
-        scores = self._score_nodes(candidates, trace)
+        scores = self._score_nodes(candidates, query_embedding, trace)
         trace.add_step('score_nodes', {'count': len(scores)})
         
         # Step 4: Prune and select top nodes
@@ -230,7 +245,57 @@ class ContextCompiler:
         
         return candidates
     
-    def _score_nodes(self, nodes: List[Node], trace: CompileTrace) -> Dict[str, NodeScore]:
+    def _gather_candidates_with_vectors(
+        self,
+        seed_node_ids: List[str],
+        query_embedding: List[float],
+        tenant_id: str,
+        trace: CompileTrace
+    ) -> List[Node]:
+        """
+        Gather candidate nodes via vector-guided BFS traversal.
+        Uses a priority queue ordered by vector similarity.
+        """
+        import heapq
+        
+        # Priority queue: (-similarity, node_id, node)
+        pq = []
+        visited = set()
+        candidates = []
+        
+        # Initialize with seeds
+        for seed_id in seed_node_ids:
+            node = self.graph_store.get_node(seed_id)
+            if node and node.tenant_id == tenant_id:
+                sim = self.vector_scorer.score_node_similarity(node, query_embedding)
+                heapq.heappush(pq, (-sim, seed_id, node))
+        
+        # BFS with priority based on similarity
+        while pq and len(candidates) < self.max_nodes * 2:
+            neg_sim, node_id, node = heapq.heappop(pq)
+            
+            if node_id in visited:
+                continue
+            
+            visited.add(node_id)
+            candidates.append(node)
+            
+            # Expand to neighbors, prioritized by similarity
+            edges = self.graph_store.get_edges_for_node(node_id)
+            for edge in edges:
+                neighbor_id = edge.dst if edge.src == node_id else edge.src
+                
+                if neighbor_id not in visited:
+                    neighbor = self.graph_store.get_node(neighbor_id)
+                    if neighbor and neighbor.tenant_id == tenant_id:
+                        # Score neighbor similarity
+                        sim = self.vector_scorer.score_node_similarity(neighbor, query_embedding)
+                        heapq.heappush(pq, (-sim, neighbor_id, neighbor))
+        
+        logger.info(f"Vector-guided BFS gathered {len(candidates)} candidates")
+        return candidates
+    
+    def _score_nodes(self, nodes: List[Node], query_embedding: Optional[List[float]], trace: CompileTrace) -> Dict[str, NodeScore]:
         """
         Score all candidate nodes using multiple signals.
         """
@@ -287,6 +352,15 @@ class ContextCompiler:
             
             # Rule score (placeholder for business rules)
             score.rule_score = 0.0
+            
+            # Vector similarity score (if available)
+            if query_embedding and self.vector_scorer:
+                try:
+                    vector_sim = self.vector_scorer.score_node_similarity(node, query_embedding)
+                    # Weight vector similarity heavily (2.0x) as it's most relevant to the query
+                    score.total_score += vector_sim * 10.0  # Scale to match other scores
+                except Exception as e:
+                    logger.error(f"Error computing vector similarity for {node.id}: {str(e)}")
             
             # Compute total
             score.compute_total()

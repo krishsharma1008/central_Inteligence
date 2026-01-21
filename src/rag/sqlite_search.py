@@ -98,4 +98,78 @@ class EmailSearcher:
         if not conversation_id:
             return []
         return self.sqlite.get_emails_by_conversation_id(conversation_id)
+    
+    def unified_search(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search both emails and attachments, returning unified results grouped by conversation.
+        
+        Args:
+            query (str): Search query
+            top_k (int): Number of top results to return
+            
+        Returns:
+            List[Dict[str, Any]]: List of results with conversation IDs and metadata
+        """
+        logger.info(f"Unified search for: '{query}', top_k: {top_k}")
+        
+        # Search emails with FTS
+        email_results = self.search(query, top_k=top_k * 2)
+        
+        # Search attachments with FTS
+        attachment_results = self.sqlite.search_attachments(query, top_k=top_k * 2)
+        
+        # Build conversation map with scores
+        conv_map = {}  # conv_id -> {best_rank, source, email_id, attachment_info}
+        
+        # Process email results
+        for email in email_results:
+            conv_id = email.get('conversation_id')
+            if not conv_id:
+                # Use email ID as conversation for emails without conv_id
+                conv_id = email['id']
+            
+            rank = email.get('rank', 999999)
+            if conv_id not in conv_map or rank < conv_map[conv_id]['best_rank']:
+                conv_map[conv_id] = {
+                    'conversation_id': conv_id,
+                    'best_rank': rank,
+                    'source': 'email',
+                    'email_id': email['id'],
+                    'subject': email.get('subject', 'No Subject'),
+                    'sender_name': email.get('sender_name', ''),
+                    'received_time': email.get('received_time', ''),
+                    'has_attachments': False
+                }
+        
+        # Process attachment results
+        for att in attachment_results:
+            email_id = att.get('email_id')
+            if email_id:
+                # Get parent email to find conversation
+                email = self.sqlite.get_email_by_id(email_id)
+                if email:
+                    conv_id = email.get('conversation_id') or email_id
+                    rank = att.get('rank', 999999)
+                    
+                    if conv_id not in conv_map or rank < conv_map[conv_id]['best_rank']:
+                        conv_map[conv_id] = {
+                            'conversation_id': conv_id,
+                            'best_rank': rank,
+                            'source': 'attachment',
+                            'email_id': email_id,
+                            'subject': email.get('subject', 'No Subject'),
+                            'sender_name': email.get('sender_name', ''),
+                            'received_time': email.get('received_time', ''),
+                            'attachment_filename': att.get('filename', ''),
+                            'has_attachments': True
+                        }
+                    else:
+                        # Update existing entry to mark has_attachments
+                        conv_map[conv_id]['has_attachments'] = True
+        
+        # Sort by best rank and return top_k
+        results = sorted(conv_map.values(), key=lambda x: x['best_rank'])[:top_k]
+        
+        logger.info(f"Unified search returned {len(results)} conversation groups")
+        return results
 

@@ -4,6 +4,7 @@ Provides HTTP endpoints for querying emails and generating answers.
 """
 import logging
 import os
+import json
 from typing import Optional
 from dotenv import load_dotenv
 
@@ -18,6 +19,7 @@ from src.SarvamClient import SarvamClient
 from src.rag.sqlite_search import EmailSearcher
 from src.rag.mongo_vectors import VectorReranker
 from src.rag.query_service import QueryService
+from src.rag.graph_query_service import GraphQueryService
 
 # Configure logging
 logging.basicConfig(
@@ -54,20 +56,23 @@ class QueryResponse(BaseModel):
     answer: str
     citations: list
     retrieved_emails: list
+    context_packet: Optional[dict] = None
 
 
 # Global service instances (initialized on startup)
 query_service: Optional[QueryService] = None
+graph_query_service: Optional[GraphQueryService] = None
 sqlite_handler: Optional[SQLiteHandler] = None
 mongodb_handler: Optional[MongoDBHandler] = None
 graph_store = None
 context_compiler = None
+vector_scorer = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    global query_service, sqlite_handler, mongodb_handler, graph_store, context_compiler
+    global query_service, graph_query_service, sqlite_handler, mongodb_handler, graph_store, context_compiler, vector_scorer
     
     logger.info("Initializing services...")
     
@@ -84,19 +89,6 @@ async def startup_event():
     # Initialize handlers
     sqlite_handler = SQLiteHandler(sqlite_db_path)
     mongodb_handler = MongoDBHandler(mongodb_uri, collection_name)
-    
-    # Initialize graph store and context compiler
-    from src.context_graph.store_sqlite import GraphStoreSQLite
-    from src.context_graph.compiler import ContextCompiler
-    graph_store = GraphStoreSQLite(sqlite_db_path)
-    context_compiler = ContextCompiler(
-        graph_store=graph_store,
-        recency_half_life_days=7.0,
-        max_nodes=50,
-        max_edges=100,
-        max_tokens=8000
-    )
-    logger.info("Graph store and context compiler initialized")
     
     # Initialize Sarvam client
     sarvam_client = SarvamClient(api_key=sarvam_api_key)
@@ -117,14 +109,48 @@ async def startup_event():
             logger.error(f"Error loading embedding model: {str(e)}")
             logger.warning("Vector reranking will be disabled")
     
+    # Initialize graph store and context compiler
+    from src.context_graph.store_sqlite import GraphStoreSQLite
+    from src.context_graph.compiler import ContextCompiler
+    from src.context_graph.vector_scorer import VectorScorer
+    
+    graph_store = GraphStoreSQLite(sqlite_db_path)
+    
+    # Initialize vector scorer if embedding model is available
+    if embedding_model:
+        vector_scorer = VectorScorer(mongodb_handler, embedding_model)
+        logger.info("Vector scorer initialized")
+    else:
+        vector_scorer = None
+        logger.warning("Vector scorer not available (no embedding model)")
+    
+    context_compiler = ContextCompiler(
+        graph_store=graph_store,
+        vector_scorer=vector_scorer,
+        recency_half_life_days=7.0,
+        max_nodes=50,
+        max_edges=100,
+        max_tokens=8000
+    )
+    logger.info("Graph store and context compiler initialized")
+    
     vector_reranker = VectorReranker(mongodb_handler, embedding_model)
     
-    # Initialize query service
+    # Initialize query service (legacy)
     query_service = QueryService(
         email_searcher=email_searcher,
         vector_reranker=vector_reranker,
         sarvam_client=sarvam_client,
         enable_vector_rerank=enable_vector_rerank
+    )
+    
+    # Initialize graph query service (new)
+    graph_query_service = GraphQueryService(
+        email_searcher=email_searcher,
+        vector_reranker=vector_reranker,
+        context_compiler=context_compiler,
+        sarvam_client=sarvam_client,
+        enable_vector_search=enable_vector_rerank
     )
     
     logger.info("Services initialized successfully")
@@ -164,26 +190,35 @@ async def root():
 @app.post("/query", response_model=QueryResponse)
 async def query_emails(request: QueryRequest):
     """
-    Query emails and generate an answer.
+    Query emails using graph-native context resolution.
+    Returns answer with context packet for visualization.
     
     Args:
         request (QueryRequest): Query request with question and top_k
         
     Returns:
-        QueryResponse: Response with answer, citations, and retrieved emails
+        QueryResponse: Response with answer, citations, retrieved emails, and context packet
     """
-    if not query_service:
-        raise HTTPException(status_code=500, detail="Query service not initialized")
+    if not graph_query_service:
+        raise HTTPException(status_code=500, detail="Graph query service not initialized")
     
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
     
     try:
-        logger.info(f"Received query: {request.question}")
-        result = query_service.query(request.question, top_k=request.top_k)
-        return QueryResponse(**result)
+        logger.info(f"Received graph query: {request.question}")
+        result = graph_query_service.query(request.question, top_k=request.top_k)
+        
+        # Build response (context_packet is already in result)
+        return {
+            "success": result["success"],
+            "answer": result["answer"],
+            "citations": result["citations"],
+            "retrieved_emails": result["retrieved_emails"],
+            "context_packet": result.get("context_packet")
+        }
     except Exception as e:
-        logger.error(f"Error processing query: {str(e)}", exc_info=True)
+        logger.error(f"Error processing graph query: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
 
@@ -499,6 +534,88 @@ async def get_graph_metrics(tenant_id: Optional[str] = None):
 class BackfillRequest(BaseModel):
     tenant_id: str = "default"
     limit: Optional[int] = None
+
+
+@app.get("/graph/all")
+async def get_full_graph(tenant_id: Optional[str] = "default"):
+    """
+    Get all nodes and edges for full graph visualization.
+    
+    Args:
+        tenant_id: Optional tenant filter
+        
+    Returns:
+        Dict with nodes, edges, and stats
+    """
+    if not graph_store:
+        raise HTTPException(status_code=500, detail="Graph store not initialized")
+    
+    try:
+        cursor = graph_store.conn.cursor()
+        
+        # Get all nodes
+        if tenant_id:
+            cursor.execute(
+                'SELECT id, type, props, tenant_id, layer, created_at, updated_at FROM graph_nodes WHERE tenant_id = ?',
+                (tenant_id,)
+            )
+        else:
+            cursor.execute('SELECT id, type, props, tenant_id, layer, created_at, updated_at FROM graph_nodes')
+        
+        nodes = []
+        for row in cursor.fetchall():
+            nodes.append({
+                'id': row[0],
+                'type': row[1],
+                'props': json.loads(row[2]),
+                'tenant_id': row[3],
+                'layer': row[4],
+                'created_at': row[5],
+                'updated_at': row[6]
+            })
+        
+        # Get all active edges
+        if tenant_id:
+            cursor.execute(
+                'SELECT id, src, dst, type, props, tenant_id, layer, created_at FROM graph_edges WHERE tenant_id = ? AND state = ?',
+                (tenant_id, 'active')
+            )
+        else:
+            cursor.execute(
+                'SELECT id, src, dst, type, props, tenant_id, layer, created_at FROM graph_edges WHERE state = ?',
+                ('active',)
+            )
+        
+        edges = []
+        for row in cursor.fetchall():
+            edges.append({
+                'id': row[0],
+                'src': row[1],
+                'dst': row[2],
+                'type': row[3],
+                'props': json.loads(row[4]),
+                'tenant_id': row[5],
+                'layer': row[6],
+                'created_at': row[7]
+            })
+        
+        # Get stats
+        stats = graph_store.get_graph_stats(tenant_id)
+        
+        return {
+            "success": True,
+            "nodes": nodes,
+            "edges": edges,
+            "stats": stats,
+            "count": {
+                "nodes": len(nodes),
+                "edges": len(edges)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting full graph: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting full graph: {str(e)}")
 
 
 @app.post("/graph/rebuild")

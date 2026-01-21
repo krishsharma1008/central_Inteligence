@@ -26,6 +26,7 @@ class VectorReranker:
     def rerank(self, email_ids: List[str], query_embedding: List[float], top_k: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Rerank emails by cosine similarity with query embedding.
+        Uses batch fetching for improved performance.
         
         Args:
             email_ids (List[str]): List of email IDs to rerank
@@ -40,36 +41,48 @@ class VectorReranker:
         
         logger.info(f"Reranking {len(email_ids)} emails using vector similarity")
         
-        # Fetch embeddings from MongoDB
-        scored_emails = []
-        for email_id in email_ids:
-            try:
-                # Get embedding from MongoDB
-                doc = self.mongodb.collection.find_one({'id': email_id})
-                if doc and 'embedding' in doc:
-                    email_embedding = doc['embedding']
-                    
-                    # Compute cosine similarity
-                    similarity = self._cosine_similarity(query_embedding, email_embedding)
-                    
-                    scored_emails.append({
-                        'id': email_id,
-                        'similarity': similarity,
-                        'metadata': doc.get('metadata', {})
-                    })
-            except Exception as e:
-                logger.error(f"Error getting embedding for email {email_id}: {str(e)}")
-                continue
-        
-        # Sort by similarity (descending)
-        scored_emails.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Return top_k if specified
-        if top_k is not None:
-            scored_emails = scored_emails[:top_k]
-        
-        logger.info(f"Reranked to {len(scored_emails)} emails")
-        return scored_emails
+        # Batch fetch embeddings from MongoDB using $in operator
+        try:
+            docs = list(self.mongodb.collection.find(
+                {'id': {'$in': email_ids}},
+                {'id': 1, 'embedding': 1, 'metadata': 1}
+            ))
+            
+            logger.info(f"Fetched {len(docs)} embeddings from MongoDB")
+            
+            # Build lookup map
+            id_to_doc = {doc['id']: doc for doc in docs}
+            
+            # Compute similarities
+            scored_emails = []
+            for email_id in email_ids:
+                if email_id in id_to_doc:
+                    doc = id_to_doc[email_id]
+                    if 'embedding' in doc and doc['embedding']:
+                        email_embedding = doc['embedding']
+                        
+                        # Compute cosine similarity
+                        similarity = self._cosine_similarity(query_embedding, email_embedding)
+                        
+                        scored_emails.append({
+                            'id': email_id,
+                            'similarity': similarity,
+                            'metadata': doc.get('metadata', {})
+                        })
+            
+            # Sort by similarity (descending)
+            scored_emails.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            # Return top_k if specified
+            if top_k is not None:
+                scored_emails = scored_emails[:top_k]
+            
+            logger.info(f"Reranked to {len(scored_emails)} emails")
+            return scored_emails
+            
+        except Exception as e:
+            logger.error(f"Error batch fetching embeddings: {str(e)}")
+            return []
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """
@@ -121,6 +134,52 @@ class VectorReranker:
         except Exception as e:
             logger.error(f"Error embedding query: {str(e)}")
             return None
+    
+    def vector_search(self, query_embedding: List[float], top_k: int = 10, collection_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Perform vector similarity search across all documents.
+        Note: This uses a linear scan. For production, use MongoDB Atlas Vector Search.
+        
+        Args:
+            query_embedding (List[float]): Query embedding vector
+            top_k (int): Number of top results to return
+            collection_name (Optional[str]): Collection to search (default: main collection)
+            
+        Returns:
+            List[Dict[str, Any]]: Top matching documents with similarity scores
+        """
+        try:
+            collection = self.mongodb.collection if collection_name is None else self.mongodb.db[collection_name]
+            
+            # Fetch all documents with embeddings (for simple implementation)
+            # In production, use MongoDB Atlas Vector Search or FAISS
+            docs = list(collection.find(
+                {'embedding': {'$exists': True, '$ne': []}},
+                {'id': 1, 'embedding': 1, 'metadata': 1}
+            ))
+            
+            logger.info(f"Fetched {len(docs)} documents for vector search")
+            
+            # Compute similarities
+            scored_docs = []
+            for doc in docs:
+                if 'embedding' in doc and doc['embedding']:
+                    similarity = self._cosine_similarity(query_embedding, doc['embedding'])
+                    scored_docs.append({
+                        'id': doc['id'],
+                        'similarity': similarity,
+                        'metadata': doc.get('metadata', {})
+                    })
+            
+            # Sort by similarity (descending)
+            scored_docs.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            # Return top_k
+            return scored_docs[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Error in vector search: {str(e)}")
+            return []
 
 
 

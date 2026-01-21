@@ -9,20 +9,17 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "dagre": "^0.8.5",
     "next": "^14.0.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-force-graph-2d": "^1.25.4"
+    "react-force-graph-2d": "^1.29.0"
   },
   "devDependencies": {
+    "@types/dagre": "^0.7.52",
     "@types/node": "^20.0.0",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "typescript": "^5.0.0"
   }
 }
-
-
-
-
-
